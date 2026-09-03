@@ -1,0 +1,7 @@
+# 允许这些依赖运行 postinstall 脚本(默认 pnpm 10+ 拒绝运行任意 postinstall 以防供应链攻击)。
+# - esbuild: 预编译 native binary,必须在 install 阶段跑
+# - vue-demi: 给 vue 2/3 兼容层打补丁
+# 如果新依赖加了 native binding 或 codegen postinstall,这里也要加。
+allowBuilds:
+  esbuild: true
+  vue-demi: true

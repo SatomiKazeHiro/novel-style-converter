@@ -1,0 +1,18 @@
+[workspace]
+members = ["crates/nsc-core", "src-tauri"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+license = "MIT"
+rust-version = "1.75"
+
+# dev profile 体积控制:
+#   incremental = false      关掉 incremental cache,省掉 target/debug/incremental/ (~7GB)
+#   debug = "line-tables-only" pdb 只留行号表,从 ~250MB/个 降到 ~20MB/个
+# 多个 crate 共享 target/debug,切 feature 时 cargo 不会清旧 hash 文件,
+# 加 profile 限制把单个 artifact 体积压下来。
+[profile.dev]
+incremental = false
+debug = "line-tables-only"

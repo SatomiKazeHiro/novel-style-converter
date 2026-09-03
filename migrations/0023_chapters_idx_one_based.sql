@@ -1,0 +1,11 @@
+﻿-- Migration 0023: chapters.idx 1-based 修复的 marker 入口
+--
+-- 实际数据修复在 startup_cleanup 的 `fix_chapter_idx_to_one_based` 项里,
+-- 因为老版这条 migration 写的是 `UPDATE chapters SET idx = idx + 1`,
+-- 会触发 chapters 表的 UNIQUE(data_asset_id, idx) 约束失败
+-- (老 idx=1 还在,新 idx=1 又来了),Db::open 直接 panic,startup_cleanup 跑不到。
+--
+-- 把 SQL 留空,schema_versions 表仍记 '0023_chapters_idx_one_based' 已应用,
+-- 这样老 db 重启时这条 migration 不会再次失败;新 db 也会标记为已应用。
+-- 真修复由 startup_cleanup 启动时一次性跑完。
+SELECT 1;

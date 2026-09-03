@@ -1,0 +1,36 @@
+pub const SCHEMAS: &[(&str, &str)] = &[
+    ("v1", include_str!("../../../../migrations/0001_init.sql")),
+    ("v2", include_str!("../../../../migrations/0002_split_uploads.sql")),
+    ("v3", include_str!("../../../../migrations/0003_chapter_byte_ranges.sql")),
+    ("v4", include_str!("../../../../migrations/0004_data_assets.sql")),
+    ("v5", include_str!("../../../../migrations/0005_chapters_data_asset_fk.sql")),
+    ("v6", include_str!("../../../../migrations/0006_transformation_novels_data_asset_fk.sql")),
+    ("v7", include_str!("../../../../migrations/0007_uploads_word_count.sql")),
+    ("v8", include_str!("../../../../migrations/0008_tn_default_columns.sql")),
+    ("v9", include_str!("../../../../migrations/0009_batches.sql")),
+    ("v10", include_str!("../../../../migrations/0010_tc_batch_columns.sql")),
+    ("0011_workflow_results", include_str!("../../../../migrations/0011_workflow_results.sql")),
+    ("0012_batches_tn_cascade", include_str!("../../../../migrations/0012_batches_tn_cascade.sql")),
+    ("0013_workflow_result_chapters_cascade", include_str!("../../../../migrations/0013_workflow_result_chapters_cascade.sql")),
+    ("0014_builtin_prompt_double_braces", include_str!("../../../../migrations/0014_builtin_prompt_double_braces.sql")),
+    ("v15", include_str!("../../../../migrations/0015_chapter_body.sql")),
+    ("v16", include_str!("../../../../migrations/0016_model_archive.sql")),
+    ("v17", include_str!("../../../../migrations/0017_prompt_archive.sql")),
+    ("v18", include_str!("../../../../migrations/0018_ai_call_logs.sql")),
+    ("v19", include_str!("../../../../migrations/0019_drop_tn_default_columns.sql")),
+    ("v20", include_str!("../../../../migrations/0020_add_tn_note.sql")),
+    ("0021_data_asset_kind", include_str!("../../../../migrations/0021_data_asset_kind.sql")),
+    ("0022_chapter_edited_at", include_str!("../../../../migrations/0022_chapter_edited_at.sql")),
+    ("0023_chapters_idx_one_based", include_str!("../../../../migrations/0023_chapters_idx_one_based.sql")),
+    ("0024_chapter_previews", include_str!("../../../../migrations/0024_chapter_previews.sql")),
+    ("0025_model_max_context", include_str!("../../../../migrations/0025_model_max_context.sql")),
+    ("0026_model_disable_thinking", include_str!("../../../../migrations/0026_model_disable_thinking.sql")),
+    ("0027_tc_batch_cascade", include_str!("../../../../migrations/0027_tc_batch_cascade.sql")),
+    ("0028_chapter_title_line", include_str!("../../../../migrations/0028_chapter_title_line.sql")),
+    // 注:此条 key 与文件名错位(`0028_` vs `0029_`),见 migration 文件顶部注释。
+    ("0028_batch_homogeneous_config", include_str!("../../../../migrations/0029_batch_homogeneous_config.sql")),
+    // 注:此条 key 与文件名错位(`0029_` vs `0030_`),见 migration 文件顶部注释。
+    // 修复 0029 backfill 引用不存在的 transformation_chapters.ctx_next_transformed
+    // 列导致所有 batches.ctx_next_transformed 留 NULL 的问题。
+    ("0029_backfill_batches_ctx_next_transformed", include_str!("../../../../migrations/0030_backfill_batches_ctx_next_transformed.sql")),
+];

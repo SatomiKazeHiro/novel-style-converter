@@ -1,0 +1,17 @@
+-- Migration key: 0029_backfill_batches_ctx_next_transformed (version 注册用)
+-- Migration filename: 0030_backfill_batches_ctx_next_transformed.sql (task 编号)
+-- 两者错位延续 plan 的有意设计(参见 0029_batch_homogeneous_config.sql 顶部注释)。
+--
+-- 背景:migration 0029 的 backfill UPDATE 引用了 transformation_chapters.ctx_next_transformed
+-- 列,但 transformation_chapters 表根本没有这列(ctx_* 只到 ctx_next_original),
+-- 导致所有 batches 行的 ctx_next_transformed 留 NULL。
+-- Batch struct 上 ctx_next_transformed: i32(非 Option),read 端 batch_from_row
+-- row.get(14) 拿到 NULL → rusqlite 抛 Invalid column type Null,
+-- list_workflows 整条 IPC 拒绝 → workflow tab 空。
+--
+-- 这次 backfill 把所有 NULL 补为 0(「不取后文上下文」,对齐
+-- WorkflowCreate 默认值 commit 1a7d845)。
+-- 其它 6 个新增列(prompt_id / model_config_id / mode / ctx_prev_*)的 NULL 风险
+-- 由读侧 COALESCE 兜底,不在这里一次性 backfill(避免污染可能有的部分行已
+-- 存在但被回滚覆盖的真值)。
+UPDATE batches SET ctx_next_transformed = 0 WHERE ctx_next_transformed IS NULL;

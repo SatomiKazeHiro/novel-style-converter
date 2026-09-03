@@ -1,0 +1,27 @@
+/target
+**/*.rs.bk
+*.db
+*.db-journal
+.DS_Store
+bash.exe.stackdump
+/node_modules
+/dist
+playwright-report
+test-results
+.vite
+
+# 本地 .env(兜底模型配置,含 api_key 占位符,不入库)
+/.env
+/.env.local
+
+# Per-machine tool configs (CodeGraph, Cursor, opencode, Claude Code)
+/.claude/
+/.codegraph/
+/.cursor/
+/.mcp.json
+/AGENTS.md
+/opencode.jsonc
+
+# Smoke test output (regenerated each run by scripts/smoke.ps1)
+/scripts/smoke.out
+/scripts/smoke.err

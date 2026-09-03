@@ -1,0 +1,24 @@
+﻿pub mod novel;
+pub mod chapter;
+pub mod transformation;
+pub mod chapter_preview;
+pub mod prompt;
+pub mod model_config;
+pub mod data_asset;
+pub mod batch;
+pub mod ai_call_log;
+pub mod workflow_result;
+pub mod promotion;
+pub mod overview;
+
+pub use novel::{TransformationNovelRepo, UploadRepo};
+pub use chapter::ChapterRepo;
+pub use chapter_preview::ChapterPreviewRepo;
+pub use transformation::TransformationChapterRepo;
+pub use prompt::PromptRepo;
+pub use model_config::ModelConfigRepo;
+pub use data_asset::DataAssetRepo;
+pub use batch::{BatchRepo, BatchStatusCount};
+pub use ai_call_log::{truncate_preview, AiCallLogRepo, PREVIEW_BYTES};
+pub use workflow_result::WorkflowResultRepo;
+pub use overview::OverviewRepo;

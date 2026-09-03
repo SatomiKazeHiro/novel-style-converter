@@ -1,0 +1,277 @@
+/*
+  ruled manuscript:
+    subject = 中文长篇小说处理工具. 视觉语言搬自手稿编辑:浅米纸底,
+    红线 hairline 替代灰,主色 = 朱砂红 (single committed accent).
+    字体 = 思源宋体(标题) + 思源黑体(正文) + Mono(id/计数).
+    装饰集中在 "做标记" 这一处:CM6 gutter 章 stamp (parse.vue .cm-marker-stamp) = 朱红印章 "章".
+*/
+
+:root,
+:root[data-theme='light'] {
+  /* Surfaces — paper tones */
+  --color-paper: #faf6ee;            /* app 画布 */
+  --color-sheet: #ffffff;            /* 卡片浮纸 */
+  --color-paper-mist: #f3ede1;       /* 边线 hover / sidebar */
+
+  /* Inks — 焦墨 */
+  --color-ink: #1a1714;
+  --color-graphite: #3a3530;
+  --color-slate: #5c564f;
+  --color-fog: #847c70;
+  --color-silver: #b3aca1;
+
+  /* Hairlines — ruled lines */
+  --color-rule-soft: #ece4d4;        /* 默认 hairline */
+  --color-rule: #d8cdb8;             /* 较深 hairline */
+  --color-rule-rouge: #e8d4c8;       /* 红线,装饰用 */
+
+  /* Accent — 朱砂红 */
+  --color-cinnabar: #c73a1d;         /* 主朱(印章/border/primary) */
+  --color-cinnabar-deep: #8a2715;    /* 深朱(active/hover) */
+  --color-cinnabar-darker: #5e1a0d;   /* 更深朱(危险/destructive) */
+  --color-cinnabar-light: #f5e4dc;   /* 极浅朱(soft bg/active) */
+
+  /* Status tints — 弱化,围绕朱红家族 */
+  --color-soft-mint: #d8e8d2;
+  --color-vivid-green: #2f6b3a;
+  --color-soft-yellow: #f5e7c5;
+  --color-tangerine: #b56a1a;
+  --color-soft-red: #f3d4cc;
+
+  /* Typography */
+  --font-serif:
+    'Source Han Serif SC', 'Noto Serif CJK SC', 'Songti SC', 'STSong',
+    'Times New Roman', serif;
+  --font-sans:
+    'Source Han Sans SC', 'Noto Sans CJK SC', 'PingFang SC',
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono:
+    'JetBrains Mono', 'SF Mono', 'Menlo', 'Consolas', ui-monospace, monospace;
+
+  --font-weight-regular: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+
+  /* Type scale — per content role */
+  --text-display: 36px;
+  --text-h1: 28px;
+  --text-h2: 22px;
+  --text-body: 14px;
+  --text-caption: 12px;
+  --text-micro: 11px;
+
+  --leading-body: 1.6;
+  --leading-tight: 1.3;
+
+  /* Spacing — compact but breathable */
+  --space-2: 4px;
+  --space-3: 8px;
+  --space-4: 12px;
+  --space-5: 16px;
+  --space-6: 20px;
+  --space-8: 32px;
+
+  /* Radii — restrained: manuscript prefers straight or gentle rounding */
+  --radius-pin: 2px;
+  --radius-card: 6px;
+  --radius-pill: 9999px;
+
+  /* Shadows — barely there */
+  --shadow-paper: 0 1px 0 0 rgba(26, 23, 20, 0.04);
+
+  /* Semantic aliases — components reference these */
+  --bg-app: var(--color-paper);
+  --bg-card: var(--color-sheet);
+  --bg-sidebar: var(--color-paper-mist);
+  --bg-hover: var(--color-paper-mist);
+  --bg-section: var(--color-paper);
+  --bg-active: var(--color-cinnabar-light);
+
+  /* Scrollbar — 细墨线,透明 track,克制 */
+  --scrollbar-width: 8px;
+  --scrollbar-thumb: var(--color-fog);
+  --scrollbar-thumb-hover: var(--color-graphite);
+  --scrollbar-track: transparent;
+
+  /* Overlay —— 弹窗/loading 遮罩背景,纸色 + alpha */
+  --overlay-bg: rgba(250, 246, 238, 0.85);
+
+  --text-primary: var(--color-ink);
+  --text-secondary: var(--color-graphite);
+  --text-muted: var(--color-fog);
+
+  --border-color: var(--color-rule);
+  --border-strong: #c4b896;
+  --border-soft: var(--color-rule-soft);
+  --border-rouge: var(--color-rule-rouge);
+
+  --accent: var(--color-cinnabar);
+  --accent-bg: var(--color-cinnabar-light);
+
+  --danger: var(--color-cinnabar-deep);
+  --danger-bg: var(--color-soft-red);
+  --danger-border: #e8b8a8;
+
+  --success: var(--color-vivid-green);
+  --success-bg: var(--color-soft-mint);
+  --success-border: #b8d4b0;
+  --warn: var(--color-tangerine);
+  --warn-bg: var(--color-soft-yellow);
+  --warn-border: #e6cf94;
+
+  --shadow: var(--shadow-paper);
+}
+
+:root[data-theme='dark'] {
+  /* 暗色 —— 暖暗纸,非 OLED 纯黑;抬一档亮度保证层级/线条/激活态可读 */
+  --color-paper: #1d1a16;
+  --color-sheet: #292420;
+  --color-paper-mist: #221e19;
+
+  --color-ink: #efeae0;
+  --color-graphite: #d8d2c8;
+  --color-slate: #b6afa3;
+  --color-fog: #847c70;
+  --color-silver: #5c564f;
+
+  --color-rule-soft: #3a342c;
+  --color-rule: #4d4338;
+  --color-rule-rouge: #5e3424;
+
+  --color-cinnabar: #e36b50;
+  --color-cinnabar-deep: #c4533a;
+  --color-cinnabar-light: #4d2a20;
+
+  --color-soft-mint: #233d2a;
+  --color-vivid-green: #6fa874;
+  --color-soft-yellow: #4a3a18;
+  --color-tangerine: #d68840;
+  --color-soft-red: #4a2820;
+
+  --bg-app: var(--color-paper);
+  --bg-card: var(--color-sheet);
+  --bg-sidebar: var(--color-paper-mist);
+  --bg-hover: var(--color-sheet);
+
+  --scrollbar-thumb: var(--color-slate);
+  --scrollbar-thumb-hover: var(--color-graphite);
+  --scrollbar-track: transparent;
+  --overlay-bg: rgba(29, 26, 22, 0.85);
+  --bg-section: var(--color-paper);
+
+  --text-primary: var(--color-ink);
+  --text-secondary: var(--color-graphite);
+  --text-muted: var(--color-slate);
+
+  --border-color: var(--color-rule);
+  --border-strong: #5c564f;
+  --border-soft: var(--color-rule-soft);
+
+  --accent: var(--color-cinnabar);
+  --accent-bg: var(--color-cinnabar-light);
+
+  --danger: #e68572;
+  --danger-bg: var(--color-soft-red);
+  --danger-border: #5a2a22;
+
+  --success: var(--color-vivid-green);
+  --success-bg: var(--color-soft-mint);
+  --success-border: #2a3a2e;
+  --warn: var(--color-tangerine);
+  --warn-bg: var(--color-soft-yellow);
+  --warn-border: #4a3a1f;
+
+  --shadow: none;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+  color: var(--text-primary);
+  background: var(--bg-app);
+  -webkit-font-smoothing: antialiased;
+}
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+/* 滚动条 —— 全局统一,WebView2/Chromium + Firefox 双兜底 */
+::-webkit-scrollbar {
+  width: var(--scrollbar-width);
+  height: var(--scrollbar-width);
+}
+::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+  transition: background 120ms ease;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-corner { background: transparent; }
+html {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+/* 行内文本链按钮 — 表格操作列专用,无边框/无背景的浅色下划线链 */
+.row-link {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--color-slate);
+  cursor: pointer;
+  text-decoration: underline transparent;
+  text-underline-offset: 3px;
+  transition: color 120ms ease, text-decoration-color 120ms ease;
+}
+.row-link:disabled,
+.row-link[disabled] {
+  cursor: not-allowed;
+  opacity: 0.45;
+  color: var(--text-muted);
+}
+.row-link:disabled:hover,
+.row-link[disabled]:hover {
+  color: var(--text-muted);
+  text-decoration-color: transparent;
+}
+.row-link:hover {
+  color: var(--accent);
+  text-decoration-color: currentColor;
+}
+.row-link.danger:hover {
+  color: var(--color-cinnabar-darker);
+  text-decoration-color: currentColor;
+}
+.row-sep {
+  display: inline-block;
+  margin: 0 8px;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+h2 {
+  margin: 0;
+  font-family: var(--font-serif);
+  font-size: var(--text-h2);
+  font-weight: var(--font-weight-regular);
+  letter-spacing: -0.005em;
+  line-height: var(--leading-tight);
+  color: var(--text-primary);
+}
