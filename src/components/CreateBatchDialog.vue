@@ -76,14 +76,14 @@
           </div>
         </div>
         <div class="preview-pane">
-          <div class="preview-header">
-            预览章节
+          <h3 class="section-title">预览章节</h3>
+
+          <!-- 区 1：原文（只读） -->
+          <div class="label-box">
+            <label class="preview-label">原文</label>
             <span v-if="previewMeta">#{{ previewMeta.idx }} · {{ previewMeta.title }} · {{ previewMeta.wordCount }} 字</span>
             <span v-else>未选章节</span>
           </div>
-
-          <!-- 区 1：原文（只读） -->
-          <label class="preview-label">原文</label>
           <textarea
             class="preview-original"
             :value="previewOriginal"
@@ -93,16 +93,19 @@
           ></textarea>
 
           <!-- 区 2：预览（LLM 输出，可重生成） -->
-          <label class="preview-label">
-            预览
-            <Button
-              class="inline-gen-btn gen-preview-btn"
-              kind="default"
-              :loading="previewLoading"
-              :disabled="!canPreview"
-              @click="onGeneratePreview"
-            >{{ previewOutput ? '重新生成' : '生成预览' }}</Button>
-          </label>
+          <div class="label-box">
+            <label class="preview-label">预览</label>
+            <span v-if="previewOutput">{{previewOutput.length}} 字</span>
+            <span class="label-actions">
+              <Button
+                class="inline-gen-btn gen-preview-btn"
+                kind="default"
+                :loading="previewLoading"
+                :disabled="!canPreview"
+                @click="onGeneratePreview"
+              >{{ previewOutput ? '重新生成' : '生成预览' }}</Button>
+            </span>
+          </div>
           <textarea
             class="preview-output"
             :value="previewOutput"
@@ -113,15 +116,16 @@
           <div v-if="previewError" class="preview-error">{{ previewError }}</div>
 
           <!-- 区 3：转换结果（首章 seed，可空） -->
-          <label class="preview-label">
-            转换结果
+          <div class="label-box">
+            <label class="preview-label">转换结果</label>
+            <span v-if="seedContent">{{seedContent.length}} 字</span>
             <span class="label-actions">
               <Button
                 class="copy-btn"
                 kind="default"
                 :disabled="!previewLatest || !previewLatest.content.trim()"
                 @click="onCopyFromPreview"
-              >↑ 从预览复制</Button>
+              >从预览复制</Button>
               <Button
                 class="clear-btn"
                 kind="default"
@@ -129,12 +133,12 @@
                 @click="onClearSeed"
               >清空</Button>
             </span>
-          </label>
+          </div>
           <textarea
             class="seed-output"
             v-model="seedContent"
             @input="onSeedInput"
-            placeholder="可手写 / 可点↑ 从预览复制 / 可保持空（首章走 LLM 队列）"
+            placeholder="可手写 / 可从预览复制 / 可保持空（首章走 LLM 队列）"
             rows="6"
           ></textarea>
           <div v-if="seedSource && seedContent.trim()" class="seed-source-hint">
@@ -154,7 +158,7 @@
         :loading="submitting"
         :disabled="!canSubmit"
         @click="onSubmit"
-      >⚙ 创建</Button>
+      >创建</Button>
     </template>
   </Dialog>
 </template>
@@ -382,7 +386,7 @@ async function onSubmit() {
       ctx_next_original: includeNext.value ? 1 : 0,
       on_failure_policy: onFailurePolicy.value,
       // 构造 FirstChapterSeed: seedContent 空 → null（首章走 LLM 队列）;
-//   非空 → { content, source }。
+      // 非空 → { content, source }。
       preview_first_chapter: seedContent.value.trim()
         ? {
             content: seedContent.value.trim(),
@@ -471,21 +475,20 @@ async function onSubmit() {
   gap: 6px;
   min-height: 0;
 }
-.preview-header {
+.label-box > span {
   font-size: 12px;
-  color: var(--text-muted);
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border-soft);
-}
-.preview-header > span {
   margin-left: 6px;
   color: var(--text-secondary);
   font-family: var(--font-mono);
 }
-.preview-label {
+.label-box {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  height: 34px;
+}
+.preview-label {
+  flex: 1;
   font-size: 11px;
   color: var(--text-muted);
 }
@@ -576,7 +579,7 @@ async function onSubmit() {
 .policy-opt.is-active .policy-radio { border-color: var(--color-cinnabar); }
 .policy-opt.is-active .policy-radio::after {
   content: ''; position: absolute;
-  top: 2px; left: 2px;
+  top: 2.5px; left: 2.5px;
   width: 8px; height: 8px; border-radius: 50%;
   background: var(--color-cinnabar);
 }

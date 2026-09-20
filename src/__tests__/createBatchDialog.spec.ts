@@ -212,4 +212,43 @@ describe('CreateBatchDialog: 首章种子可选化 (spec 2026-09-01)', () => {
     await flushPromises();
     expect(dialog.find('.seed-source-hint').text()).toContain('不消耗');
   });
+
+  // 预览区结构（h3.section-title + .label-box 行）—— 「原文」标签从表头挪进第一行 label-box，
+  // 并新增预览/转换结果的字数计数。回归点：模板重构后这些节点必须仍在，且标签不与
+  // 右侧元信息/按钮错位。
+  it('预览区结构：section-title + 三个 label-box 行', async () => {
+    const dialog = mountDialog();
+    await fillRequired(dialog);
+    const titles = dialog.findAll('h3.section-title').map((n) => n.text());
+    expect(titles).toContain('预览章节');
+    const boxes = dialog.findAll('.label-box');
+    expect(boxes.length).toBe(3);
+    for (const box of boxes) {
+      expect(box.find('.preview-label').exists()).toBe(true);
+    }
+    // 「原文」元信息现在在第一行 label-box 内（旧结构里在 .preview-header）
+    expect(boxes[0].text()).toContain('原文');
+    expect(dialog.find('.preview-header').exists()).toBe(false);
+  });
+
+  it('字数计数：预览输出与转换结果各有自己的计数', async () => {
+    const dialog = mountDialog();
+    await fillRequired(dialog);
+    // 生成预览 → 预览行出现字数
+    await dialog.find('button.gen-preview-btn').trigger('click');
+    await flushPromises();
+    const boxes = dialog.findAll('.label-box');
+    expect(boxes[1].text()).toContain(`${'LLM 输出内容'.length} 字`);
+    // 从预览复制 → 转换结果行出现字数
+    await dialog.find('button.copy-btn').trigger('click');
+    await flushPromises();
+    expect(dialog.findAll('.label-box')[2].text()).toContain(`${'LLM 输出内容'.length} 字`);
+  });
+
+  it('按钮文案不再带符号前缀（↑ / ⚙ 已移除）', async () => {
+    const dialog = mountDialog();
+    await fillRequired(dialog);
+    expect(dialog.find('button.copy-btn').text()).toBe('从预览复制');
+    expect(dialog.find('button.create-btn').text()).toBe('创建');
+  });
 });
