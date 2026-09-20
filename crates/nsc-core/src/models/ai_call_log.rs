@@ -53,6 +53,9 @@ pub struct AiCallLog {
     pub response_size: i64,
     pub latency_ms: i64,
     pub error: Option<String>,
+    /// 产出比例越出护栏时的说明(NULL = 正常,或本次调用无可比输入)。
+    /// 见 `transformer::ratio_guard` —— 纯量测,不据此判失败、不重试。
+    pub ratio_note: Option<String>,
 }
 
 /// 插入一行 AI 调用日志的入参 —— 命令层 / recorder 拼好后直接调 `AiCallLogRepo::insert`。
@@ -79,6 +82,9 @@ pub struct NewAiCallLog {
     pub response_size: i64,
     pub latency_ms: i64,
     pub error: Option<String>,
+    /// 产出比例越出护栏时的说明(NULL = 正常,或本次调用无可比输入)。
+    /// 见 `transformer::ratio_note` —— 纯量测,不据此判失败、不重试。
+    pub ratio_note: Option<String>,
 }
 
 /// 前端 / 命令层做 list 过滤用的查询参数。

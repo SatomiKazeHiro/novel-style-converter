@@ -212,6 +212,9 @@ pub async fn test_model(
         response_full,
         latency_ms,
         error: error_msg,
+        // test_model 不量测产出比例:输入是一次连通性探测串("ping"),
+        // 与输出长度无可比性(与 transformer.rs 里 TestModel 分支同样的理由)。
+        ratio_note: None,
     });
 
     Ok(report)

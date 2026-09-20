@@ -482,6 +482,9 @@ export interface AiCallLog {
   response_size: number;
   latency_ms: number;
   error: string | null;
+  /// 产出比例越出护栏时的说明;null = 正常(或本次调用无可比输入,如 test_model)。
+  /// 纯量测:不据此判失败,由用户决定是否重跑(见 nsc-core transformer::ratio_guard)。
+  ratio_note: string | null;
 }
 
 /** list_ai_call_logs 鍏ュ弬 鈥斺€?鍚庣 snake_case DTO,瀛楁淇濇寔 Rust 鍘熷悕銆?*/

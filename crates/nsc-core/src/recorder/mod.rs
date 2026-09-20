@@ -52,6 +52,9 @@ pub struct AiCallEvent {
     pub response_full: String,         // 完整 response —— recorder 落 ai_call_logs 时存全文
     pub latency_ms: i64,
     pub error: Option<String>,
+    /// 产出比例越出护栏时的说明(见 `transformer::ratio_guard`)。
+    /// 与 status 无关:status=Success 也可能带此说明 —— 模型答了,但产出比例异常。
+    pub ratio_note: Option<String>,
 }
 
 /// Recorder 抽象 —— hot path 只调 `record(event)`,不 await。
@@ -200,6 +203,7 @@ async fn write_one(db: &Arc<Db>, event: &AiCallEvent) -> Result<()> {
         response_size: resp_size,
         latency_ms: event.latency_ms,
         error: event.error.clone(),
+        ratio_note: event.ratio_note.clone(),
     };
     db.ai_call_logs().insert(&new)?;
     Ok(())
@@ -229,6 +233,7 @@ mod tests {
             response_full: "hi there".into(),
             latency_ms: 250,
             error: None,
+            ratio_note: None,
         }
     }
 

@@ -53,6 +53,14 @@
         <p v-else class="muted">(空)</p>
       </section>
 
+      <section v-if="log.ratio_note" class="block">
+        <h3>产出比例异常</h3>
+        <p class="ratio-note">{{ log.ratio_note }}</p>
+        <p class="muted">
+          纯量测,不影响本次调用是否成功 —— 越界只说明提示词目标未达成,可按需重跑该章节。
+        </p>
+      </section>
+
       <section v-if="log.error" class="block">
         <h3>错误</h3>
         <pre class="preview error-preview">{{ log.error }}</pre>
@@ -176,4 +184,14 @@ function businessLabel(b: AiCallBusiness): string {
   background: var(--danger-bg);
 }
 .muted { color: var(--text-muted); font-size: 13px; }
+.ratio-note {
+  margin: 0 0 6px;
+  padding: 10px 12px;
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: var(--radius-pin);
+  color: var(--warn);
+  font-size: 13px;
+  line-height: 1.6;
+}
 </style>

@@ -179,4 +179,67 @@ mod tests {
             initialized.applied_schema_versions().unwrap(),
         );
     }
+
+    /// 已存在的 ai_call_logs 表(已落过数据)上执行 ratio_note 迁移,必须成功加列且不丢数据。
+    ///
+    /// 回归点:0031 用的是 `ALTER TABLE ... ADD COLUMN`,而 SQLite 没有
+    /// `ADD COLUMN IF NOT EXISTS`。若该 migration 在表已存在时失败,或写成需要重建表的
+    /// 形式,真实用户库(已有 ai_call_logs 数据)升级时会直接崩在启动期。
+    #[test]
+    fn ratio_note_migration_adds_column_to_existing_table() {
+        use crate::models::{AiCallBusiness, AiCallStatus, NewAiCallLog};
+
+        fn minimal_log() -> NewAiCallLog {
+            NewAiCallLog {
+                business: AiCallBusiness::TransformChapter,
+                context_type: Some("transformation_chapter".into()),
+                context_id: Some(7),
+                model_config_id: Some(1),
+                model_name: "m".into(),
+                base_url: "u".into(),
+                temperature: None,
+                max_tokens: None,
+                system_preview: None,
+                user_preview: None,
+                system_size: 0,
+                user_size: 0,
+                estimated_tokens_in: None,
+                actual_tokens_in: None,
+                actual_tokens_out: None,
+                status: AiCallStatus::Success,
+                response_preview: None,
+                response_size: 0,
+                latency_ms: 1,
+                error: None,
+                ratio_note: None,
+            }
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("existing.db");
+
+        // 1) 建库(跑到最新),再人为移除 0031 记录与列 —— 模拟升级前的用户库。
+        {
+            let db = Db::open(&path).unwrap();
+            db.ai_call_logs().insert(&minimal_log()).unwrap();
+            db.lock()
+                .execute_batch(
+                    "ALTER TABLE ai_call_logs DROP COLUMN ratio_note; \
+                     DELETE FROM schema_versions WHERE version = '0031_ai_call_log_ratio_note';",
+                )
+                .unwrap();
+        }
+
+        // 2) 重新打开 —— run_schemas 补跑 0031。
+        let upgraded = Db::open(&path).unwrap();
+
+        let versions = upgraded.applied_schema_versions().unwrap();
+        assert!(
+            versions.iter().any(|v| v == "0031_ai_call_log_ratio_note"),
+            "0031 应记录为已应用",
+        );
+        let (logs, total) = upgraded.ai_call_logs().list(&Default::default()).unwrap();
+        assert_eq!(total, 1, "迁移不应丢历史行");
+        assert_eq!(logs[0].ratio_note, None, "新列在旧行上应为 NULL");
+    }
 }

@@ -2,6 +2,7 @@ pub mod batch_scheduler;
 pub mod job;
 pub mod provider_cache;
 pub mod queue;
+pub mod ratio_guard;
 // transformer 模块与父模块同名,是有意的领域命名:DefaultTransformer 实现位于
 // transformer/transformer.rs,与 batch_scheduler / queue / job 平级;
 // rust 生态类似命名(如 tokio runtime)也保留此风格。

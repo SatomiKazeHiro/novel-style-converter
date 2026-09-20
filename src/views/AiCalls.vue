@@ -40,9 +40,9 @@
 
     <div v-if="loading && logs.length === 0" class="empty">加载中...</div>
     <div v-else-if="logs.length === 0" class="empty">
-      <p class="empty-title">还没有 AI 调用日志</p>
+      <p class="empty-title">未有 AI 调用日志</p>
       <p class="empty-hint">
-        数据来自 transformer 路径(章节转换)与 test_model 路径(模型测试连通性)。
+        数据来自 transformer 路径（章节转换）与 test_model 路径（模型测试连通性）
       </p>
     </div>
     <div v-else ref="aiCallTableEl" class="table-wrap">
@@ -87,6 +87,10 @@
           <span class="divider">/</span>
           <span>out {{ row.actual_tokens_out ?? '—' }}</span>
         </div>
+      </template>
+      <template #cell-ratio="{ row }">
+        <Tag v-if="row.ratio_note" kind="warn" :title="row.ratio_note">比例异常</Tag>
+        <span v-else class="muted">—</span>
       </template>
       <template #cell-latency="{ row }">{{ formatLatency(row.latency_ms) }}</template>
       <template #cell-error="{ row }">
@@ -219,6 +223,7 @@ const aiCallColumns = [
   { id: 'model', header: '模型', enableSorting: false },
   { id: 'status', header: '状态', enableSorting: false },
   { id: 'tokens', header: 'tokens', enableSorting: false },
+  { id: 'ratio', header: '比例', enableSorting: false },
   { id: 'latency', header: '延迟', enableSorting: true },
   { id: 'error', header: '错误', enableSorting: false },
   { id: 'actions', header: '操作', enableSorting: false },
@@ -229,6 +234,7 @@ const aiCallWidths: Record<string, number> = {
   model: 240,
   status: 80,
   tokens: 280,
+  ratio: 100,
   latency: 90,
   error: 240,
   actions: 90,
@@ -448,24 +454,6 @@ onMounted(async () => {
   border-radius: var(--radius-pin);
   margin-bottom: 16px;
   border: 1px solid var(--danger-border);
-}
-.empty {
-  text-align: center;
-  padding: 48px 24px;
-  color: var(--text-muted);
-  border: 1px dashed var(--border-rouge);
-  border-radius: var(--radius-card);
-  background: var(--color-sheet);
-}
-.empty-title {
-  font-size: 16px;
-  color: var(--text-primary);
-  margin: 0 0 8px;
-}
-.empty-hint {
-  font-size: 13px;
-  margin: 0;
-  line-height: 1.6;
 }
 .time {
   display: flex;

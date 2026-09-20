@@ -33,4 +33,5 @@ pub const SCHEMAS: &[(&str, &str)] = &[
     // 修复 0029 backfill 引用不存在的 transformation_chapters.ctx_next_transformed
     // 列导致所有 batches.ctx_next_transformed 留 NULL 的问题。
     ("0029_backfill_batches_ctx_next_transformed", include_str!("../../../../migrations/0030_backfill_batches_ctx_next_transformed.sql")),
+    ("0031_ai_call_log_ratio_note", include_str!("../../../../migrations/0031_ai_call_log_ratio_note.sql")),
 ];

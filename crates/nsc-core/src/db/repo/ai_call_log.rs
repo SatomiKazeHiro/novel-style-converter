@@ -72,6 +72,7 @@ impl<'a> AiCallLogRepo<'a> {
             Box::new(n.response_size),
             Box::new(n.latency_ms),
             Box::new(n.error.clone()),
+            Box::new(n.ratio_note.clone()),
         ];
         let bind_refs: Vec<&dyn rusqlite::ToSql> = binds.iter().map(|b| b.as_ref()).collect();
         self.conn.execute(
@@ -81,8 +82,8 @@ impl<'a> AiCallLogRepo<'a> {
                 temperature, max_tokens,
                 system_preview, user_preview, system_size, user_size,
                 estimated_tokens_in, actual_tokens_in, actual_tokens_out,
-                status, response_preview, response_size, latency_ms, error
-            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21)",
+                status, response_preview, response_size, latency_ms, error, ratio_note
+            ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22)",
             rusqlite::params_from_iter(bind_refs),
         )?;
         Ok(self.conn.last_insert_rowid())
@@ -118,7 +119,7 @@ impl<'a> AiCallLogRepo<'a> {
                     temperature, max_tokens,
                     system_preview, user_preview, system_size, user_size,
                     estimated_tokens_in, actual_tokens_in, actual_tokens_out,
-                    status, response_preview, response_size, latency_ms, error
+                    status, response_preview, response_size, latency_ms, error, ratio_note
                FROM ai_call_logs WHERE {} ORDER BY created_at DESC, id DESC LIMIT {} OFFSET {}",
             where_sql, limit, offset
         );
@@ -163,7 +164,7 @@ impl<'a> AiCallLogRepo<'a> {
                     temperature, max_tokens,
                     system_preview, user_preview, system_size, user_size,
                     estimated_tokens_in, actual_tokens_in, actual_tokens_out,
-                    status, response_preview, response_size, latency_ms, error
+                    status, response_preview, response_size, latency_ms, error, ratio_note
                FROM ai_call_logs WHERE id = ?1",
         )?;
         let mut rows = stmt.query(params![id])?;
@@ -223,6 +224,7 @@ fn from_row(row: &Row) -> rusqlite::Result<AiCallLog> {
         response_size: row.get(19)?,
         latency_ms: row.get(20)?,
         error: row.get(21)?,
+        ratio_note: row.get(22)?,
     })
 }
 
@@ -252,6 +254,7 @@ mod tests {
             response_size: 2,
             latency_ms: 1234,
             error: None,
+            ratio_note: None,
         }
     }
 
@@ -287,6 +290,23 @@ mod tests {
         assert_eq!(repo.list(&f).unwrap().0.len(), 1);
         let f = AiCallLogFilter { status: Some(AiCallStatus::Success), ..Default::default() };
         assert_eq!(repo.list(&f).unwrap().0.len(), 2);
+    }
+
+    /// ratio_note 落库 + 回读 —— 越界说明与 NULL(正常)两种都要能正确往返。
+    #[test]
+    fn ratio_note_roundtrips() {
+        let db = crate::db::Db::open_in_memory().unwrap();
+        let repo = db.ai_call_logs();
+        let mut flagged = new_log(AiCallBusiness::TransformChapter);
+        flagged.ratio_note = Some("压缩后仅剩原文 8%(低于护栏 15%)".into());
+        repo.insert(&flagged).unwrap();
+        repo.insert(&new_log(AiCallBusiness::TransformChapter)).unwrap();
+
+        let (logs, _) = repo.list(&AiCallLogFilter::default()).unwrap();
+        assert_eq!(logs.len(), 2);
+        let notes: Vec<Option<&str>> = logs.iter().map(|l| l.ratio_note.as_deref()).collect();
+        assert!(notes.iter().any(|n| n.is_some_and(|s| s.contains("8%"))), "越界说明要能读回");
+        assert!(notes.iter().any(|n| n.is_none()), "未越界行应为 NULL");
     }
 
     #[test]

@@ -108,8 +108,8 @@ impl DefaultTransformer {
                 system_full.push_str(extra);
             }
         }
-        let estimated_tokens_in =
-            ((system_full.chars().count() + user_full.chars().count()) / 2) as i32;
+        let input_chars = system_full.chars().count() + user_full.chars().count();
+        let estimated_tokens_in = (input_chars / 2) as i32;
         // max_context 护栏 —— 估算的输入 tokens 超模型配置上限则直接拒发,
         // 由前端把错误原样展示给用户(见 `Error::Validation` 在 ai_call_logs 透出)。
         // None = 不强制校验,保留历史行为。
@@ -185,6 +185,16 @@ impl DefaultTransformer {
                 Err(Error::Ai(e.to_string())),
             ),
         };
+        // 产出比例量测 —— 提示词承诺的比例(压缩 30–50% / 文风 ±15%)此前无任何实测。
+        // 这里只量测 + 落库(见 ratio_guard 模块头:不判失败、不重试的原因)。
+        // TestModel 排除:它的"输入"是一次连通性探测串,与输出长度无可比性。
+        let ratio_note = match business {
+            AiCallBusiness::TransformChapter | AiCallBusiness::RegeneratePreview => {
+                let out_chars = response_full.chars().count();
+                crate::transformer::ratio_guard::ratio_note(req.prompt.kind, input_chars, out_chars)
+            }
+            AiCallBusiness::TestModel => None,
+        };
         self.recorder.record(AiCallEvent {
             business,
             context_type,
@@ -203,6 +213,7 @@ impl DefaultTransformer {
             response_full,
             latency_ms,
             error: error_msg,
+            ratio_note,
         });
 
         outcome
