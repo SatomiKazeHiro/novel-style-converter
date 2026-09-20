@@ -286,7 +286,7 @@ h2 {
  * 失效时静默套上虚线框:
  * - 在容器内垂直居中一句提示(无装饰):用 .empty-fill,见 Transform / DataAsset /
  *   AppendChaptersDialog;
- * - 表格单元格、对话框内的行内空文本:用 .empty-cell,见 ui/DataTable / ui/Table /
+ * - 表格单元格、对话框内的行内空文本:用 .empty-cell,见 ui/DataTable /
  *   RegeneratePreviewDialog。
  */
 .empty {
