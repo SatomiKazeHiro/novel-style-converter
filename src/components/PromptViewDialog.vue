@@ -19,6 +19,15 @@
       />
       <p class="hint">内置 prompt 只读。点进文本框后按 Ctrl+A 全选、Ctrl+C 复制。</p>
     </div>
+    <div class="vars">
+      <div class="vars-head">可用变量</div>
+      <ul class="vars-list">
+        <li v-for="v in PROMPT_VARIABLES" :key="v.token">
+          <code class="var">{{ v.token }}</code>
+          <span class="var-desc">{{ v.desc }}</span>
+        </li>
+      </ul>
+    </div>
     <template #footer>
       <Button @click="open = false">关闭</Button>
     </template>
@@ -29,6 +38,7 @@
 import Dialog from './ui/Dialog.vue';
 import Button from './ui/Button.vue';
 import { formatPromptKind } from '../utils/prompt-locale';
+import { PROMPT_VARIABLES } from '../utils/prompt-variables';
 import type { Prompt } from '../ipc/types';
 
 defineProps<{ initial: Prompt }>();
@@ -74,6 +84,38 @@ const open = defineModel<boolean>('open', { required: true });
 .template-area:focus { border-color: var(--border-strong); }
 .hint {
   margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.vars {
+  margin-top: 16px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-pin);
+  background: var(--color-paper);
+  padding: 8px 12px;
+}
+.vars-head {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.vars-list {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+.vars-list li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 0;
+}
+.var {
+  flex-shrink: 0;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+.var-desc {
   font-size: 12px;
   color: var(--text-secondary);
 }
