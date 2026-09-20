@@ -275,3 +275,28 @@ h2 {
   line-height: var(--leading-tight);
   color: var(--text-primary);
 }
+
+.empty {
+  text-align: center;
+  padding: 48px 24px;
+  color: var(--text-muted);
+  border: 1px dashed var(--border-rouge);
+  border-radius: var(--radius-card);
+  background: var(--color-sheet);
+}
+.empty-title {
+  font-size: 16px;
+  color: var(--text-primary);
+  margin: 0 0 8px;
+}
+.empty-hint {
+  font-size: 13px;
+  margin: 0;
+  line-height: 1.6;
+}
+.empty-hint.subtle {
+  margin-top: 8px;
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 12px;
+}

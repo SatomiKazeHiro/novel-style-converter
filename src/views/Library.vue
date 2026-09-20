@@ -18,7 +18,8 @@
 
     <template v-if="page === 'uploads'">
       <div v-if="!store.loading && store.uploads.length === 0" class="empty">
-        还没有文件,点击右上"上传 .txt"添加一个。
+        <p class="empty-title">未有文件</p>
+        <p class="empty-hint">点击右上"上传 .txt"添加</p>
       </div>
       <DataTable
         v-else
@@ -49,7 +50,8 @@
 
     <template v-else-if="page === 'data-assets'">
       <div v-if="!store.loading && store.dataAssets.length === 0" class="empty">
-        还没有数据资产。请到“上传原文”页面选择文件并解析章节。
+        <p class="empty-title">未有数据资产</p>
+        <p class="empty-hint">请到“上传原文”页面选择文件并解析章节</p>
       </div>
       <DataTable
         v-else
@@ -96,7 +98,8 @@
 
     <template v-else>
       <div v-if="!store.loading && store.transformationNovels.length === 0" class="empty">
-        还没有转换工程。请到“数据资产”页面选择资产并新建工程。
+          <p class="empty-title">未有转换工程</p>
+          <p class="empty-hint">请到“数据资产”页面选择资产并新建工程</p>
       </div>
       <DataTable
         v-else
@@ -596,14 +599,6 @@ function goDetail(tnId: number) {
 .toast-leave-to {
   opacity: 0;
   transform: translateY(-6px);
-}
-.empty {
-  text-align: center;
-  padding: 56px 0;
-  color: var(--text-secondary);
-  border: 1px dashed var(--border-color);
-  border-radius: var(--radius-pin);
-  background: var(--color-sheet);
 }
 .muted {
   color: var(--text-secondary);

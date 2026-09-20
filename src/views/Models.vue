@@ -27,7 +27,7 @@
     <div v-if="!store.loading && !store.hasAnyModel" class="empty">
       <p class="empty-title">尚未配置任何模型</p>
       <p class="empty-hint">
-        模型是 LLM 转换的前提。点"新增模型"填一份 OpenAI 兼容 endpoint 的 base_url / api_key / model 即可。
+        模型是 LLM 转换的前提，在"新增模型"设置 OpenAI 兼容 endpoint 的 base_url / api_key / model 即可
       </p>
       <p class="empty-hint subtle">
         注：本应用不会从环境变量自动注入默认模型；一切模型配置都需要在此处显式新增。
@@ -248,30 +248,6 @@ async function onToggleArchived(v: boolean) {
   margin-bottom: 16px;
   border: 1px solid var(--danger-border);
   font-family: var(--font-serif);
-}
-.empty {
-  text-align: center;
-  padding: 48px 24px;
-  color: var(--text-muted);
-  border: 1px dashed var(--border-rouge);
-  border-radius: var(--radius-card);
-  background: var(--color-sheet);
-  font-family: var(--font-serif);
-}
-.empty-title {
-  font-size: 18px;
-  color: var(--text-primary);
-  margin: 0 0 12px;
-}
-.empty-hint {
-  font-size: 14px;
-  margin: 0 0 6px;
-  line-height: 1.6;
-}
-.empty-hint.subtle {
-  color: var(--text-muted);
-  font-style: italic;
-  font-size: 12px;
 }
 .archived {
   color: var(--text-muted);

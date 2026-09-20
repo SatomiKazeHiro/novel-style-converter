@@ -1,6 +1,6 @@
 <template>
   <section>
-    <PageHeader title="提示词" subtitle="压缩与文风转换的 prompt 模板,内置 / 自定义均可">
+    <PageHeader title="提示词" subtitle="压缩与文风转换的 prompt 模板，内置 / 自定义均可">
       <template #actions>
         <Button kind="primary" @click="openCreate">新建 prompt</Button>
       </template>
@@ -24,7 +24,7 @@
         {{ store.includeArchived ? '没有任何提示词(包括归档)' : '还没有提示词' }}
       </p>
       <p v-if="!store.includeArchived" class="empty-hint">
-        点击右上"新建 prompt"创建一条;内置 prompt 可用"复制"派生用户版后再编辑。
+        点击右上"新建 prompt"创建一条；内置 prompt 可用"复制"派生用户版后再编辑。
       </p>
     </div>
     <div v-else ref="promptTableEl" class="table-wrap">
