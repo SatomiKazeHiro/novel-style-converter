@@ -276,6 +276,19 @@ h2 {
   color: var(--text-primary);
 }
 
+/* 页面空态 = 装饰性占位框(虚线 + 卡片底 + 大内边距)。
+ *
+ * 只适用于「整页/整块没有数据」的占位,配合 .empty-title + .empty-hint 使用。
+ * 当前使用者:Prompts / Library / Models / AiCalls —— 这四处的空态不再各自定义样式,
+ * 统一吃这里;TransformationNovelDetail 仍是局部覆盖(圆角/内边距/虚线色略有不同)。
+ *
+ * **不要**用它表示另外两种空态 —— 同名不同物会让全局样式在某个 scoped 作用域
+ * 失效时静默套上虚线框:
+ * - 在容器内垂直居中一句提示(无装饰):用 .empty-fill,见 Transform / DataAsset /
+ *   AppendChaptersDialog;
+ * - 表格单元格、对话框内的行内空文本:用 .empty-cell,见 ui/DataTable / ui/Table /
+ *   RegeneratePreviewDialog。
+ */
 .empty {
   text-align: center;
   padding: 48px 24px;

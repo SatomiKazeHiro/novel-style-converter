@@ -250,24 +250,6 @@ async function onToggleArchived(v: boolean) {
   border-radius: var(--radius-pin);
   margin-bottom: 16px;
 }
-.empty {
-  text-align: center;
-  padding: 48px 24px;
-  color: var(--text-secondary);
-  border: 1px dashed var(--border-color);
-  border-radius: var(--radius-pin);
-  background: var(--color-sheet);
-}
-.empty-title {
-  font-size: 16px;
-  color: var(--text-primary);
-  margin: 0 0 8px;
-}
-.empty-hint {
-  font-size: 13px;
-  margin: 0;
-  line-height: 1.6;
-}
 .muted {
   color: var(--text-secondary);
   font-size: 13px;

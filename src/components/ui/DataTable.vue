@@ -37,7 +37,7 @@
       </thead>
       <tbody>
         <tr v-if="table.getRowModel().rows.length === 0">
-          <td :colspan="table.getAllColumns().length" class="empty">{{ emptyText }}</td>
+          <td :colspan="table.getAllColumns().length" class="empty-cell">{{ emptyText }}</td>
         </tr>
         <tr v-for="row in table.getRowModel().rows" :key="rowKey(row.original)">
           <td
@@ -323,7 +323,7 @@ function onThClick(column: any) {
 .dt tbody tr:last-child td {
   border-bottom: none;
 }
-.empty {
+.empty-cell {
   text-align: center;
   color: var(--text-muted);
   padding: 48px 0;

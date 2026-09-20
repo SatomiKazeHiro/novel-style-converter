@@ -14,7 +14,7 @@
       </thead>
       <tbody>
         <tr v-if="data.length === 0">
-          <td :colspan="columns.length" class="empty">{{ emptyText }}</td>
+          <td :colspan="columns.length" class="empty-cell">{{ emptyText }}</td>
         </tr>
         <tr v-for="(row, i) in data" :key="rowKey(row, i)">
           <td
@@ -96,7 +96,7 @@ withDefaults(
 .table tbody tr:hover td {
   background: var(--color-paper);
 }
-.empty {
+.empty-cell {
   text-align: center;
   color: var(--text-muted);
   padding: 48px 0;

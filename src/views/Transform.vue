@@ -27,7 +27,7 @@
     <div v-if="store.loading" class="loading">加载中...</div>
 
     <template v-else-if="store.transformations.length === 0">
-      <div class="empty">
+      <div class="empty-fill">
         <p>该章节还没有转换结果</p>
         <Button kind="primary" @click="dialogOpen = true">⚙ 首次转换</Button>
       </div>
@@ -133,9 +133,9 @@ async function onSubmitted() {
   flex: 1; display: flex; align-items: center; justify-content: center;
   color: var(--text-secondary); font-size: 13px;
 }
-.empty {
+.empty-fill {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 16px; color: var(--text-secondary); font-size: 14px;
 }
-.empty p { margin: 0; }
+.empty-fill p { margin: 0; }
 </style>

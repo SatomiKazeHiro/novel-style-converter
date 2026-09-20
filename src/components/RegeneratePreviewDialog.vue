@@ -11,7 +11,7 @@
         </div>
         <div class="content">
           <pre v-if="originalBody">{{ originalBody }}</pre>
-          <div v-else class="empty">（无内容）</div>
+          <div v-else class="empty-cell">（无内容）</div>
         </div>
       </section>
 
@@ -52,7 +52,7 @@
       <!-- 右侧：预览 -->
       <section class="col col-preview">
         <header class="col-header">预览（{{ previews.length }}）</header>
-        <div v-if="previews.length === 0" class="empty empty-state">尚未生成预览</div>
+        <div v-if="previews.length === 0" class="empty-cell empty-state">尚未生成预览</div>
         <template v-else>
           <div class="tabs">
             <button
@@ -68,11 +68,11 @@
             </button>
           </div>
           <div class="content">
-            <div v-if="!currentPreview" class="empty">（无内容）</div>
+            <div v-if="!currentPreview" class="empty-cell">（无内容）</div>
             <div v-else-if="currentPreview.status === 'generating'" class="generating">生成中…</div>
             <pre v-else-if="currentPreview.status === 'failed'">{{ currentPreview.error ?? '生成失败' }}</pre>
             <pre v-else-if="currentPreview.preview_content">{{ currentPreview.preview_content }}</pre>
-            <div v-else class="empty">（无内容）</div>
+            <div v-else class="empty-cell">（无内容）</div>
           </div>
           <div class="actions">
             <Button :disabled="!canUsePreview" @click="onUsePreview">使用此预览填充草稿</Button>
@@ -432,7 +432,7 @@ function previewTabTitle(p: ChapterPreviewRow, i: number): string {
   margin-top: 8px;
   flex-wrap: wrap;
 }
-.empty {
+.empty-cell {
   color: var(--text-muted);
   padding: 24px;
   text-align: center;

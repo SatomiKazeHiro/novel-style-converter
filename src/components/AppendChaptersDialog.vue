@@ -78,7 +78,7 @@
       <!-- loading / error -->
       <div v-if="loadErrorMessage" class="error">{{ loadErrorMessage }}</div>
       <div v-else-if="isLoading" class="loading">加载章节中...</div>
-      <div v-else-if="availableSources.length === 0" class="empty">该工作流已经覆盖本转换工程下的全部章节,无可补充项。</div>
+      <div v-else-if="availableSources.length === 0" class="empty-fill">该工作流已经覆盖本转换工程下的全部章节,无可补充项。</div>
 
       <!-- 章节册页:全部源章节按 idx ASC 排,已在 batch 的仍在原位但 disabled -->
       <div v-else class="chapter-list">
@@ -577,7 +577,7 @@ function onConfirm() {
   font-size: 13px;
 }
 .loading,
-.empty {
+.empty-fill {
   flex: 1;
   padding: 48px 32px;
   text-align: center;

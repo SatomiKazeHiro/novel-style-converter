@@ -84,7 +84,7 @@
             </div>
           </template>
         </RecycleScroller>
-        <div v-else class="empty">暂无章节</div>
+        <div v-else class="empty-fill">暂无章节</div>
       </div>
       <div class="pane">
         <div class="pane-header">
@@ -431,7 +431,7 @@ function onCancelDiscard() {
   resize: none;
   border-radius: 4px;
 }
-.empty {
+.empty-fill {
   flex: 1;
   display: flex;
   align-items: center;
