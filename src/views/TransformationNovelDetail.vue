@@ -30,6 +30,7 @@ import PageHeader from '../components/ui/PageHeader.vue';
 import IconArrowLeft from '~icons/lucide/arrow-left';
 import IconAlertTriangle from '~icons/lucide/alert-triangle';
 import { countWords, deltaPercent, formatDeltaPercent, formatTime, formatWordCount } from '../utils/format';
+import { guardNote } from '../utils/ratio-guard';
 import { confirmDialog } from '../composables/useConfirm';
 import CreateBatchDialog from '../components/CreateBatchDialog.vue';
 import PromoteWorkflowDialog from '../components/PromoteWorkflowDialog.vue';
@@ -121,8 +122,7 @@ const workflowChapterColumns = [
   { accessorKey: 'source_word_count', id: 'src_words', header: '原字数', enableSorting: true },
   { accessorKey: 'result_word_count', id: 'out_words', header: '现字数', enableSorting: true },
   // 变化率方向是有意义的排序维度（压缩模式看谁压得过分，文风模式看谁跑飞）。
-  // 注意：列定义里的 header 不生效（表头走 #header-<id> 具名插槽），所以表头在模板里给。
-  { id: 'delta', enableSorting: true },
+  { id: 'delta', header: '字变率', enableSorting: true },
   { id: 'actions', header: '操作', enableSorting: false },
 ];
 const workflowChapterWidths: Record<string, number> = {
@@ -138,6 +138,13 @@ const workflowChapterWidths: Record<string, number> = {
 /// 字变率 = 结果字数 vs 原文字数，计算与格式化都在 utils/format（可单测）。
 function rowDelta(row: WorkflowChapterRow): number | null {
   return deltaPercent(row.source_word_count, row.result_word_count);
+}
+
+/// 该章产出是否越出护栏（阈值随工作流 mode 变化）→ 返回可展示的说明，正常则 null。
+function rowGuardNote(row: WorkflowChapterRow): string | null {
+  const mode = selectedWorkflow.value?.mode;
+  if (mode !== 'compress' && mode !== 'style') return null;
+  return guardNote(mode, row.source_word_count, row.result_word_count);
 }
 
 // 章节来源 tab
@@ -1082,9 +1089,6 @@ watch(() => sources.value, (list) => {
             @change="onToggleAllRetry($event)"
           />
         </template>
-        <template #header-src_words><span class="num-head">原字数</span></template>
-        <template #header-out_words><span class="num-head">现字数</span></template>
-        <template #header-delta><span class="num-head">字变率</span></template>
         <template #cell-pick="{ row }">
           <!-- batch 状态允许重试时才显示 checkbox:整列勾选不可用时单选也没意义 -->
           <input
@@ -1124,6 +1128,16 @@ watch(() => sources.value, (list) => {
               : (rowDelta(row)! > 0 ? 'up' : 'down')"
           >{{ formatDeltaPercent(rowDelta(row)!) }}</span>
           <span v-else class="num muted">—</span>
+          <!-- 越界标记(与后端 ratio_guard 同阈值):⚠ 挂在字变率右侧,
+               悬停给出具体比例与越界方向。变红/变绿只表达"变长/变短"这一维,
+               所以"是否越界"必须另给一个记号,否则会被误读成同一件事。 -->
+          <span
+            v-if="rowGuardNote(row)"
+            class="guard-mark"
+            :title="rowGuardNote(row) ?? ''"
+          >
+            <IconAlertTriangle class="guard-icon" />
+          </span>
         </template>
         <template #cell-actions="{ row }">
           <!-- 详情：始终可见（看 source/transformed） -->
@@ -1472,7 +1486,7 @@ watch(() => sources.value, (list) => {
 .dot-running { background: var(--color-cinnabar); animation: pulse 1.2s ease-in-out infinite; }
 .dot-pending { background: var(--text-muted); opacity: 0.55; }
 /* 字数与字变率列 —— 等宽数字右对齐，方便纵向扫读比较。 */
-.num-head { display: block; text-align: right; }
+.num-head { display: inline-block; text-align: right; }
 .num { display: block; text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 12px; }
 .num.muted { color: var(--text-muted); }
 .delta { font-weight: 600; }
@@ -1481,6 +1495,9 @@ watch(() => sources.value, (list) => {
 .delta.up { color: var(--danger); }
 .delta.down { color: var(--success); }
 .delta.flat { color: var(--text-muted); font-weight: 400; }
+/* 越界标记 —— 用 warn 色而不是上/下箭头，与"变长/变短"区分开。 */
+.guard-mark { display: inline-flex; align-items: center; margin-left: 4px; color: var(--warn); cursor: help; }
+.guard-icon { width: 13px; height: 13px; flex-shrink: 0; }
 /* 失败/跳过行的状态列前 ⚠️ 标识 —— 视觉上快速定位,完整错误去 Chapter Detail 看。 */
 .status-warn-mark { display: inline-flex; align-items: center; color: var(--danger); margin-right: 4px; }
 .warn-icon { width: 14px; height: 14px; flex-shrink: 0; }
