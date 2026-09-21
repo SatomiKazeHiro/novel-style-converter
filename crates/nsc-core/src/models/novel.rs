@@ -11,7 +11,8 @@ pub struct Upload {
     pub byte_size: i64,
     pub uploaded_at: DateTime<Utc>,
     pub file_path: String,
-    /// 原文整篇。data_assets 的章节切片通过 byte_start/byte_end 在此坐标系定位。
+    /// 原文整篇。章节标题在此坐标系里的行号记在 `Chapter.title_line`
+    /// (早期版本用 byte_start/byte_end 定位切片,这两列已在 migration 0015 删除)。
     pub original_text: String,
     /// 字数(zh-aware:汉字 + 字母 + 数字)。upload_file() 时一次算好。
     /// UI 列表展示用,避免每次 list 都对原文做字符串扫描。
