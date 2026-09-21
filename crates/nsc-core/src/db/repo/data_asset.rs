@@ -225,7 +225,7 @@ mod tests {
         }).unwrap();
         db.workflow_results().create_for_batch_with_slots(batch_id, &[chapter_id]).unwrap();
         db.workflow_results().write_content_by_chapter(batch_id, chapter_id, "转换后".into()).unwrap();
-        db.transformation_chapters().mark_done(tc_id, "转换后".into(), 5, 5).unwrap();
+        db.transformation_chapters().mark_done(tc_id, "转换后".into(), Some(5), Some(5)).unwrap();
         db.batches().set_status(batch_id, BatchStatus::Stopped).unwrap();
         batch_id
     }

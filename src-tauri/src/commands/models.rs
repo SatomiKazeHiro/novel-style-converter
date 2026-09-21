@@ -156,8 +156,8 @@ pub async fn test_model(
                     model: payload.model,
                     base_url: payload.base_url,
                     latency_ms: started.elapsed().as_millis() as i64,
-                    tokens_in: Some(resp.tokens_in),
-                    tokens_out: Some(resp.tokens_out),
+                    tokens_in: resp.tokens_in,
+                    tokens_out: resp.tokens_out,
                     content_preview: Some(preview),
                     error: None,
                 }

@@ -313,7 +313,7 @@ mod tests {
         // tc[0]=done(写 wrc.content),tc[1]=failed,tc[2]=skipped
         db.workflow_results().create_for_batch_with_slots(batch_id, &[1, 2, 3]).unwrap();
         db.workflow_results().write_content_by_chapter(batch_id, 1, "转换后文本A".into()).unwrap();
-        db.transformation_chapters().mark_done(tc_ids[0], "转换后文本A".into(), 10, 20).unwrap();
+        db.transformation_chapters().mark_done(tc_ids[0], "转换后文本A".into(), Some(10), Some(20)).unwrap();
         db.transformation_chapters().mark_failed(tc_ids[1], "测试失败".into()).unwrap();
         db.transformation_chapters().mark_skipped(tc_ids[2], "用户跳过".into()).unwrap();
         db.batches().set_status(batch_id, BatchStatus::Stopped).unwrap();
@@ -356,7 +356,7 @@ mod tests {
         let (_u, _d, batch_id, tc_ids) = seed_chain(&db);
         // 直接 mark_done 但不写 wrc.content(模拟数据损坏)
         // mark_done 内部会写 tc.result_content,但 wrc.content 仍 NULL
-        db.transformation_chapters().mark_done(tc_ids[0], "".into(), 0, 0).unwrap();
+        db.transformation_chapters().mark_done(tc_ids[0], "".into(), Some(0), Some(0)).unwrap();
         db.batches().set_status(batch_id, BatchStatus::Stopped).unwrap();
 
         let result = db.promotion().create_promoted_from_workflow(batch_id, "t".into());
@@ -371,7 +371,7 @@ mod tests {
         let (_u, _d, batch_id, tc_ids) = seed_single_chapter(&db);
         db.workflow_results().create_for_batch_with_slots(batch_id, &[1]).unwrap();
         db.workflow_results().write_content_by_chapter(batch_id, 1, "A".into()).unwrap();
-        db.transformation_chapters().mark_done(tc_ids[0], "A".into(), 1, 1).unwrap();
+        db.transformation_chapters().mark_done(tc_ids[0], "A".into(), Some(1), Some(1)).unwrap();
         db.batches().set_status(batch_id, BatchStatus::Stopped).unwrap();
 
         let id1 = db.promotion().create_promoted_from_workflow(batch_id, "v1".into()).unwrap();
@@ -386,7 +386,7 @@ mod tests {
         let (_u, da_id, batch_id, tc_ids) = seed_single_chapter(&db);
         db.workflow_results().create_for_batch_with_slots(batch_id, &[1]).unwrap();
         db.workflow_results().write_content_by_chapter(batch_id, 1, "A".into()).unwrap();
-        db.transformation_chapters().mark_done(tc_ids[0], "A".into(), 1, 1).unwrap();
+        db.transformation_chapters().mark_done(tc_ids[0], "A".into(), Some(1), Some(1)).unwrap();
         db.batches().set_status(batch_id, BatchStatus::Stopped).unwrap();
 
         let promoted_id = db.promotion().create_promoted_from_workflow(batch_id, "p".into()).unwrap();

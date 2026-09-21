@@ -146,7 +146,7 @@ fn prev_tx_picks_most_recent_neighbor_not_oldest() {
     for &cid in &cids[0..=1] {
         let tcs = db.transformation_chapters().list_by_chapter(cid).unwrap();
         assert_eq!(tcs.len(), 1);
-        db.transformation_chapters().mark_done(tcs[0].id, String::new(), 0, 0).unwrap();
+        db.transformation_chapters().mark_done(tcs[0].id, String::new(), Some(0), Some(0)).unwrap();
     }
 
     // 给 batch 建结果集 + ch1/ch2 槽(空),然后写入正文。
@@ -208,7 +208,7 @@ fn prev_tx_orders_recent_first_ascending() {
 
     for &cid in &cids[0..=2] {
         let tcs = db.transformation_chapters().list_by_chapter(cid).unwrap();
-        db.transformation_chapters().mark_done(tcs[0].id, String::new(), 0, 0).unwrap();
+        db.transformation_chapters().mark_done(tcs[0].id, String::new(), Some(0), Some(0)).unwrap();
     }
     db.workflow_results().create_for_batch_with_slots(batch_id, &cids[0..=3]).unwrap();
     db.workflow_results().write_content_by_chapter(batch_id, cids[0], "TX-1").unwrap();

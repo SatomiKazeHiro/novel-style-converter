@@ -120,7 +120,7 @@ fn setup_promotable_workflow() -> (Db, i64, Vec<String>, Vec<String>) {
         db.workflow_results().create_for_batch_with_slots(batch_id, &chapter_ids).unwrap();
         db.workflow_results().write_content_by_chapter(batch_id, chapter_id, &transformeds[i]).unwrap();
         // mark_done 的 result_content 内部用 NULLIF(空),传非空就行,跟 wrc.content 一致
-        db.transformation_chapters().mark_done(tc_id, transformeds[i].clone(), 1, 1).unwrap();
+        db.transformation_chapters().mark_done(tc_id, transformeds[i].clone(), Some(1), Some(1)).unwrap();
     }
     db.batches().set_status(batch_id, BatchStatus::Stopped).unwrap();
 

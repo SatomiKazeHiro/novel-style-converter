@@ -213,6 +213,31 @@ describe('CreateBatchDialog: 首章种子可选化 (spec 2026-09-01)', () => {
     expect(dialog.find('.seed-source-hint').text()).toContain('不消耗');
   });
 
+  // provider 不返回 usage 时(tokens 为 null),预览仍应可用,UI 显示 "—" 而不是 "null"。
+  // 回归点:后端 ChatResponse.tokens_* 改成 Option 后,前端若直接渲染会显示 "null"。
+  it('provider 未返回 usage:tokens 为 null 时仍可复制,显示 "—"', async () => {
+    const { previewFirstChapter } = await import('../ipc/commands');
+    (previewFirstChapter as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      content: 'LLM 输出内容', tokens_in: null, tokens_out: null,
+    });
+    const dialog = mountDialog();
+    await fillRequired(dialog);
+    await dialog.find('button.gen-preview-btn').trigger('click');
+    await flushPromises();
+    await dialog.find('button.copy-btn').trigger('click');
+    await flushPromises();
+    // seed 仍应建立,且 tokens 为 null(而不是 0,也不是 undefined)
+    const hint = dialog.find('.seed-source-hint').text();
+    expect(hint).toContain('—');
+    expect(hint).not.toContain('null');
+    await dialog.find('button.create-btn').trigger('click');
+    await flushPromises();
+    const payload = dialog.emitted('submit')![0][0];
+    expect(payload.preview_first_chapter.source).toEqual({
+      kind: 'llm', tokens_in: null, tokens_out: null,
+    });
+  });
+
   // 预览区结构（h3.section-title + .label-box 行）—— 「原文」标签从表头挪进第一行 label-box，
   // 并新增预览/转换结果的字数计数。回归点：模板重构后这些节点必须仍在，且标签不与
   // 右侧元信息/按钮错位。

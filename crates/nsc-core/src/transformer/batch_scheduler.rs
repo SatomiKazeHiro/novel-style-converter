@@ -903,10 +903,11 @@ pub(crate) fn apply_preview_in_tx(
             other => other.into(),
         })?;
     // 2. UPDATE tc:标 done + 写 result_content + tokens + completed_at
-    // 按 source 分支取 tokens:Llm 用 LLM 实算;Manual 写 0。
-    let (tokens_in, tokens_out) = match seed.source {
+    // 按 source 分支取 tokens:Llm 用 LLM 实算(provider 未返回 usage 时为 None → NULL);
+    // Manual 写 0("无 LLM 调用"这个语义要保留成明确的 0,不是 None)。
+    let (tokens_in, tokens_out): (Option<i32>, Option<i32>) = match seed.source {
         SeedSource::Llm { tokens_in, tokens_out } => (tokens_in, tokens_out),
-        SeedSource::Manual => (0, 0),
+        SeedSource::Manual => (Some(0), Some(0)),
     };
     tx.execute(
         "UPDATE transformation_chapters SET status='done', result_content=?1, tokens_in=?2, tokens_out=?3, started_at=?4, completed_at=?4, error=NULL WHERE batch_id=?5 AND chapter_id=?6",
@@ -1030,7 +1031,7 @@ mod tests {
         let batch_id = seed_batch_with_tcs(&db, tn_id, c0, c1, c2, prompt_id, model_id);
         let seed = FirstChapterSeed {
             content: "preview result".into(),
-            source: SeedSource::Llm { tokens_in: 100, tokens_out: 200 },
+            source: SeedSource::Llm { tokens_in: Some(100), tokens_out: Some(200) },
         };
         let now = Utc::now().to_rfc3339();
         let _bsg = db.lock();

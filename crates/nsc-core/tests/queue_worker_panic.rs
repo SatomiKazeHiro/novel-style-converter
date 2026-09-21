@@ -37,8 +37,8 @@ impl AiProvider for PanicOnceProvider {
         }
         Ok(ChatResponse {
             content: "转换后的正文".into(),
-            tokens_in: 11,
-            tokens_out: 22,
+            tokens_in: Some(11),
+            tokens_out: Some(22),
         })
     }
 }

@@ -97,13 +97,15 @@ impl AiProvider for OpenAiProvider {
         let content = wire.choices.into_iter().next()
             .ok_or_else(|| Error::Ai("empty choices".into()))?
             .message.content;
-        let (in_t, out_t) = wire.usage
-            .map(|u| (u.prompt_tokens, u.completion_tokens))
-            .ok_or_else(|| Error::Ai("usage field missing in response".into()))?;
-        Ok(ChatResponse {
-            content,
-            tokens_in: in_t,
-            tokens_out: out_t,
-        })
+        // usage 是**可选**的:不是所有 OpenAI 兼容实现都返回它(流式代理 / 部分自建
+        // 网关会省略)。缺 usage 只是少一项记账,内容本身没问题 —— 因此降级为
+        // `actual_tokens_* = NULL`,而不是让整次调用失败。
+        // 以前这里 `.ok_or_else(...)?` 把缺 usage 当致命错误,导致这类 provider
+        // 每次都报 "usage field missing in response",章节全部转换失败。
+        let (tokens_in, tokens_out) = match wire.usage {
+            Some(u) => (Some(u.prompt_tokens), Some(u.completion_tokens)),
+            None => (None, None),
+        };
+        Ok(ChatResponse { content, tokens_in, tokens_out })
     }
 }

@@ -114,7 +114,8 @@ pub struct FirstChapterSeed {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SeedSource {
     /// 用户调 previewFirstChapter + 从预览复制 → seed 来自 LLM。
-    Llm { tokens_in: i32, tokens_out: i32 },
+    /// `tokens_*` 为 None 表示该 provider 未返回 usage(见 `ai::ChatResponse`)。
+    Llm { tokens_in: Option<i32>, tokens_out: Option<i32> },
     /// 用户在 dialog 内手写 → 没有 LLM 调用,tokens 为 0。
     Manual,
 }
@@ -135,9 +136,10 @@ pub struct PreviewFirstChapterInput {
 }
 
 /// 试运行结果(IPC 边界 DTO 由 commands 层另起,这里只承载后端内部结果)。
+/// `tokens_*` 为 None = provider 未返回 usage,不是失败。
 #[derive(Debug, Clone)]
 pub struct PreviewFirstChapterOutcome {
     pub content: String,
-    pub tokens_in: i32,
-    pub tokens_out: i32,
+    pub tokens_in: Option<i32>,
+    pub tokens_out: Option<i32>,
 }

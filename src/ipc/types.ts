@@ -609,10 +609,11 @@ export interface PreviewFirstChapterInput {
 }
 
 /// `preview_first_chapter` 出参(spec §5.1)。
+/// `tokens_*` 为 null = 该 provider 未返回 usage(UI 显示 "—"),不是失败。
 export interface PreviewFirstChapterOutput {
   content: string;
-  tokens_in: number;
-  tokens_out: number;
+  tokens_in: number | null;
+  tokens_out: number | null;
 }
 
 /// 「新建工作流」试运行区可选项（spec 2026-09-01）。
@@ -624,8 +625,9 @@ export interface FirstChapterSeed {
 }
 
 /// 区分 LLM 出 vs 手写。手写时 tokens_in/out 都是 0,语义"无 LLM 调用"。
+/// llm 分支的 null 表示 provider 未返回 usage —— 与 manual 的 0 语义不同,不要合并。
 export type FirstChapterSeedSource =
-  | { kind: 'llm'; tokens_in: number; tokens_out: number }
+  | { kind: 'llm'; tokens_in: number | null; tokens_out: number | null }
   | { kind: 'manual' };
 
 /// `append_chapters_to_batch` 入参。

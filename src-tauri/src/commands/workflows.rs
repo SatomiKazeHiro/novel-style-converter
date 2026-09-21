@@ -23,9 +23,13 @@ pub struct FirstChapterSeedDto {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SeedSourceDto {
+    /// `tokens_*` 可缺省 —— provider 未返回 usage 时前端拿不到数字,传 null。
+    /// 缺省会落成 NULL,而不是伪造 0(0 专门表示 Manual「无 LLM 调用」)。
     Llm {
-        tokens_in: i32,
-        tokens_out: i32,
+        #[serde(default)]
+        tokens_in: Option<i32>,
+        #[serde(default)]
+        tokens_out: Option<i32>,
     },
     Manual,
 }
@@ -523,8 +527,9 @@ pub struct PreviewFirstChapterInput {
 #[serde(rename_all = "snake_case")]
 pub struct PreviewFirstChapterOutput {
     pub content: String,
-    pub tokens_in: i32,
-    pub tokens_out: i32,
+    /// None = provider 未返回 usage(前端显示 "—"),不是失败。
+    pub tokens_in: Option<i32>,
+    pub tokens_out: Option<i32>,
 }
 
 /// 调一次 AI 跑 idx 最小那个章节,返回 preview 结果(spec §3.4 / §5.1)。

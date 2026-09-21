@@ -36,8 +36,9 @@ pub struct TransformationNovelContext {
 
 pub struct TransformOutcome {
     pub result_content: String,
-    pub tokens_in: i32,
-    pub tokens_out: i32,
+    /// `None` = provider 未返回 usage(见 `ai::ChatResponse`)。不是失败。
+    pub tokens_in: Option<i32>,
+    pub tokens_out: Option<i32>,
 }
 
 /// 把 prompt + 上下文渲染成 chat 请求并发给 `AiProvider` 的抽象。
@@ -167,8 +168,10 @@ impl DefaultTransformer {
             Ok(r) => (
                 AiCallStatus::Success,
                 r.content.clone(),
-                Some(r.tokens_in),
-                Some(r.tokens_out),
+                // usage 缺失时落 NULL(不再 `Some(...)` 包一层 —— 那会把
+                // "provider 没报"伪造成一个具体数字,掩盖真实的缺记账状态)。
+                r.tokens_in,
+                r.tokens_out,
                 None,
                 Ok(TransformOutcome {
                     result_content: r.content.clone(),

@@ -112,7 +112,9 @@ impl<'a> TransformationChapterRepo<'a> {
         Ok(())
     }
 
-    pub fn mark_done(&self, id: i64, result_content: String, tokens_in: i32, tokens_out: i32) -> Result<()> {
+    /// 标记完成。`tokens_*` 为 `Option` —— provider 不返回 usage 时落 NULL
+    /// (见 `ai::ChatResponse`),而不是伪造一个数字。
+    pub fn mark_done(&self, id: i64, result_content: String, tokens_in: Option<i32>, tokens_out: Option<i32>) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         // NULLIF(?2,'') 让 worker 在 spec §5.x 收口后传空串时,result_content 列保持 NULL
         // (正文写在 workflow_result_chapters.content 槽);其他调用方传实际正文时不变。

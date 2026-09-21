@@ -29,12 +29,13 @@ impl<'a> ChapterPreviewRepo<'a> {
     }
 
     /// 标记预览完成:写入 preview_content + tokens + updated_at = 当前 UTC。
+    /// `tokens_*` 为 `Option` —— provider 不返回 usage 时落 NULL(见 `ai::ChatResponse`)。
     pub fn update_done(
         &self,
         id: i64,
         preview_content: &str,
-        tokens_in: i32,
-        tokens_out: i32,
+        tokens_in: Option<i32>,
+        tokens_out: Option<i32>,
     ) -> Result<()> {
         let now = Utc::now().to_rfc3339();
         self.conn.execute(

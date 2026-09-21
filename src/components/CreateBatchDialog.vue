@@ -143,7 +143,7 @@
           ></textarea>
           <div v-if="seedSource && seedContent.trim()" class="seed-source-hint">
             来源：
-            <template v-if="seedSource.kind === 'llm'">LLM（消耗 {{ seedSource.tokens_in }}/{{ seedSource.tokens_out }} tokens）</template>
+            <template v-if="seedSource.kind === 'llm'">LLM（消耗 {{ seedSource.tokens_in ?? '—' }}/{{ seedSource.tokens_out ?? '—' }} tokens）</template>
             <template v-else>手写（不消耗 tokens）</template>
           </div>
         </div>
@@ -203,8 +203,9 @@ const previewError = ref<string | null>(null);
 const previewOriginal = ref('');
 const previewOutput = ref('');
 /// 最新一次 previewFirstChapter IPC 的返回（含 tokens_in/out）。
-/// previewLatest 在生成成功时即写入；"↑ 从预览复制"按钮读取它构建 seed。
-const previewLatest = ref<{ content: string; tokens_in: number; tokens_out: number } | null>(null);
+/// previewLatest 在生成成功时即写入；"从预览复制"按钮读取它构建 seed。
+/// tokens 为 null = 该 provider 未返回 usage（不是失败，UI 显示 "—"）。
+const previewLatest = ref<{ content: string; tokens_in: number | null; tokens_out: number | null } | null>(null);
 const previewMeta = ref<{ idx: number; title: string; wordCount: number } | null>(null);
 /// "转换结果"区双向绑定。可空 —— 用户不填时，seed=null，首章走 LLM 队列。
 const seedContent = ref('');

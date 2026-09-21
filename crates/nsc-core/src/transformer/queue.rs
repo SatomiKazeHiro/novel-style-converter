@@ -260,7 +260,8 @@ struct Final {
 }
 
 enum DbWrite {
-    Done { tokens_in: i32, tokens_out: i32 },
+    /// `tokens_*` 为 None = provider 未返回 usage(不是失败)。
+    Done { tokens_in: Option<i32>, tokens_out: Option<i32> },
     Failed { err: String },
 }
 
@@ -477,14 +478,14 @@ async fn push_done(
     tn_id: i64,
     chapter_title: String,
     chapter_idx: i32,
-    tokens_in: i32, tokens_out: i32,
+    tokens_in: Option<i32>, tokens_out: Option<i32>,
 ) {
     let mut s = shared.inner.lock().await;
     s.done.push(JobInfo {
         tc_id: tid, tn_id,
         chapter_title, chapter_idx,
         status: JobStatus::Done,
-        error: None, tokens_in: Some(tokens_in), tokens_out: Some(tokens_out),
+        error: None, tokens_in, tokens_out,
     });
 }
 
