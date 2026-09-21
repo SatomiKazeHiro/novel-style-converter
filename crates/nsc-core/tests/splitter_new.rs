@@ -146,3 +146,86 @@ fn title_line_for_blank_line_fallback() {
     assert_eq!(r.chapters[1].title_line, 3);
     assert_eq!(r.chapters[1].content, "段落二正文");
 }
+
+// ── 此前未覆盖的路径 ────────────────────────────────────────────────────────
+//
+// 下面这组补的是 34 个既有用例完全没碰过的分支。重点是英文正则 `RE_CHAPTER_EN`
+// (混排场景下直接决定章节数)与「空正文章节」的处理。
+
+#[test]
+fn english_chapter_regex() {
+    // RE_CHAPTER_EN 此前零覆盖。它失效的后果很严重:英文小说会退化成
+    // 「整本 = 1 章」(走空行兜底),而不是切出 N 章。
+    let t = "Chapter 1: The Beginning\nbody one\nChapter 2: Rising\nbody two\n";
+    let r = DefaultSplitter.split(t);
+    let titles: Vec<&str> = r.chapters.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(titles, vec!["Chapter 1: The Beginning", "Chapter 2: Rising"]);
+    assert_eq!(r.chapters[0].content, "body one");
+    assert_eq!(r.chapters[1].content, "body two");
+}
+
+#[test]
+fn english_chapter_regex_is_case_sensitive() {
+    // 记录当前行为:正则无 `(?i)`,只认 `Chapter N` 这一种大小写。
+    // 小写 `chapter 1` / 全大写 `CHAPTER 1` **不被识别** → 落到空行兜底,
+    // 整段成为「标题=首行」的单章。若非有意,这是一处英文小说的识别缺口。
+    for text in ["chapter 1\nbody\nchapter 2\nbody2\n", "CHAPTER 1\nbody\n"] {
+        let r = DefaultSplitter.split(text);
+        assert_eq!(r.chapters.len(), 1, "当前不识别该大小写,应退化为单章: {text:?}");
+    }
+}
+
+#[test]
+fn english_spelled_out_number_is_not_matched() {
+    // `Chapter One`(拼写数字)不匹配 `\d+` → 整本退化为单章。
+    // 同样是「记录现状 + 标出缺口」:英文小说常见这种写法。
+    let r = DefaultSplitter.split("Chapter One\nbody\nChapter Two\nbody2\n");
+    assert_eq!(r.chapters.len(), 1);
+    assert_eq!(r.chapters[0].title, "Chapter One");
+    assert_eq!(r.chapters[0].content, "body\nChapter Two\nbody2");
+}
+
+#[test]
+fn mixed_chinese_and_english_chapters() {
+    // 中英混排时两个正则都要生效,且按出现位置排序。
+    let t = "第1章 中\nbody\nChapter 2 EN\nbody2\n第3章 中\nbody3\n";
+    let r = DefaultSplitter.split(t);
+    let titles: Vec<&str> = r.chapters.iter().map(|c| c.title.as_str()).collect();
+    assert_eq!(titles, vec!["第1章 中", "Chapter 2 EN", "第3章 中"]);
+}
+
+#[test]
+fn empty_text_and_whitespace_only_yield_no_chapters() {
+    for text in ["", "   ", "\n\n\n", "  \n\t\n  "] {
+        let r = DefaultSplitter.split(text);
+        assert!(r.chapters.is_empty(), "空/纯空白输入应产出 0 章: {text:?} → {:?}",
+            r.chapters.iter().map(|c| &c.title).collect::<Vec<_>>());
+    }
+}
+
+#[test]
+fn chapter_without_body_is_dropped() {
+    // ⚠️ 记录当前行为,同时也是已知风险点(rules.rs 正则路径的
+    // `if !content.is_empty()`):**标题存在但没有正文的章节会被整章丢弃**。
+    //
+    // 后果:作者偶尔会写一个只有标题的过场章,或正文只有空白 —— 那一章会从
+    // 结果里消失,章节 idx 随之整体前移(不是空洞占位)。若这是有意的(避免产出
+    // 空章节),应在 rules.rs 注释里写明;若不是,应改为保留空 content 的章节。
+    let only = DefaultSplitter.split("第1章：只有标题");
+    assert!(only.chapters.is_empty(), "仅有标题、无正文 → 当前会整章丢弃");
+
+    // 丢的是「无正文那一章」,其余章保留且 idx 顺延
+    let head = DefaultSplitter.split("第1章：甲\n正文甲\n第2章：乙\n");
+    assert_eq!(head.chapters.len(), 1);
+    assert_eq!(head.chapters[0].title, "第1章：甲");
+
+    let mid = DefaultSplitter.split("第1章：甲\n第2章：乙\n正文乙\n");
+    assert_eq!(mid.chapters.len(), 1);
+    assert_eq!(mid.chapters[0].title, "第2章：乙", "被丢的是无正文的第1章");
+
+    // 正文只有空白等同于无正文
+    let blank = DefaultSplitter.split("第1章：甲\n   \n第2章：乙\n正文乙\n");
+    assert_eq!(blank.chapters.len(), 1);
+    assert_eq!(blank.chapters[0].title, "第2章：乙");
+}
+
