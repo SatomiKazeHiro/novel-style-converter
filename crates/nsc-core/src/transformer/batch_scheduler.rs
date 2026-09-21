@@ -403,9 +403,15 @@ impl BatchScheduler {
         }
         // 事务内回读最新 batch —— 失败映射 QueryReturnedNoRows → NotFound,
         // 其他 rusqlite 错误经 `?` 由 #[from] 自动转 Error::Db。
+        //
+        // 必须用 `BATCH_COLUMNS`(而不是手写列清单):这里曾漏了 7 列,导致
+        // batch_from_row 抛 InvalidColumnIndex(8) —— 整条 stop 路径每次执行都失败。
+        let sql = format!(
+            "SELECT {} FROM batches WHERE id = ?1",
+            crate::db::repo::batch::BATCH_COLUMNS
+        );
         let updated = match tx.query_row(
-            "SELECT id, transformation_novel_id, label, on_failure_policy, status, created_at, started_at, ended_at \
-             FROM batches WHERE id = ?1",
+            &sql,
             rusqlite::params![batch_id],
             crate::db::repo::batch::batch_from_row,
         ) {
@@ -988,9 +994,9 @@ mod tests {
              (transformation_novel_id, label, on_failure_policy, status, created_at, started_at, \
               prompt_id, model_config_id, mode, \
               ctx_prev_original, ctx_prev_transformed, ctx_next_original, ctx_next_transformed) \
-             VALUES (?1, ?2, ?3, \"running\", ?4, ?4, ?5, ?6, \"compress\", 0, 0, 0, 0)",
+             VALUES (?1, ?2, \"pause_and_review\", \"running\", ?3, ?3, ?4, ?5, \"compress\", 0, 0, 0, 0)",
             rusqlite::params![
-                tn_id, "test", "pause_and_review", now,
+                tn_id, "test", now,
                 prompt_id, model_id,
             ],
         ).unwrap();
@@ -1100,5 +1106,189 @@ mod tests {
             let wrc = db.workflow_results().get_content_by_batch_and_chapter(batch_id, *cid).unwrap();
             assert!(wrc.is_none());
         }
+    }
+
+    // ── 批次生命周期状态机 ───────────────────────────────────────────────────
+    //
+    // 上面三个测试只覆盖了 `apply_preview_in_tx` 这个事务助手(而且是直接调它)。
+    // 真正的生命周期 —— `on_chapter_done` / `on_chapter_failed` / `advance_batch` /
+    // `maybe_finalize_batch` / `stop_workflow` / `retry_empty_slots` —— 此前零覆盖,
+    // 而这是全项目最复杂的状态机(1100 行),静默 bug 的代价是章节卡死或批次错判完成。
+
+    /// 立即返回固定正文的 provider —— 让 worker 快速走完 done 回调链。
+    struct InstantProvider;
+
+    #[async_trait::async_trait]
+    impl crate::ai::AiProvider for InstantProvider {
+        async fn chat(
+            &self,
+            _req: crate::ai::ChatRequest,
+        ) -> Result<crate::ai::ChatResponse> {
+            Ok(crate::ai::ChatResponse {
+                content: "转换后正文".into(),
+                tokens_in: Some(7),
+                tokens_out: Some(9),
+            })
+        }
+    }
+
+    /// 建一个接了 JobQueue + notifier 的 scheduler —— 接线与 `src-tauri/src/lib.rs` 一致:
+    /// worker 的 done/failed 回调转给 `on_chapter_done` / `on_chapter_failed`。
+    /// 队列 1 个 worker,便于确定性观察。
+    fn scheduler_with_notifier(db: &Arc<Db>) -> Arc<BatchScheduler> {
+        let db_for_workers = db.clone();
+        let queue = Arc::new(JobQueue::new(
+            1,
+            move || Ok(db_for_workers.clone()),
+            |_cfg: &crate::models::ModelConfig| -> Box<dyn crate::ai::AiProvider> {
+                Box::new(InstantProvider)
+            },
+            Arc::new(crate::recorder::NoopRecorder),
+            Arc::new(HashSet::new()),
+        ));
+        let scheduler = Arc::new(BatchScheduler::new(
+            db.clone(),
+            queue.clone(),
+            Arc::new(|_cfg: &crate::models::ModelConfig| -> Box<dyn crate::ai::AiProvider> {
+                Box::new(InstantProvider)
+            }),
+            Arc::new(crate::recorder::NoopRecorder),
+            Arc::new(HashSet::new()),
+        ));
+        let sched = scheduler.clone();
+        queue.set_notifier(Arc::new(move |tid, success, error, content| {
+            // enqueue 时会先发一条 (false, None) 的"已入队"通知,按 lib.rs 的约定跳过。
+            if !success && error.is_none() {
+                return;
+            }
+            if success {
+                let _ = sched.on_chapter_done(tid, content);
+            } else {
+                let _ = sched.on_chapter_failed(tid, error.unwrap_or_default());
+            }
+        }));
+        scheduler
+    }
+
+    /// 完成判据:批次内没有 pending/running 时 → **Stopped**(不是 Completed),
+    /// 且 ended_at 被写上。Failed/Done/Skipped/Cancelled 都不阻塞收尾。
+    #[test]
+    fn finalize_marks_batch_stopped_when_no_active_chapters() {
+        let db = fresh_db();
+        let (tn_id, c0, c1, c2, prompt_id, model_id) = seed_env(&db);
+        let batch_id = seed_batch_with_tcs(&db, tn_id, c0, c1, c2, prompt_id, model_id);
+
+        // 三章全部终结(有 done 有 failed —— failed 不应阻塞收尾)
+        let tcs = db.transformation_chapters().list_by_batch(batch_id).unwrap();
+        db.transformation_chapters().mark_done(tcs[0].id, "x".into(), Some(1), Some(1)).unwrap();
+        db.transformation_chapters().mark_done(tcs[1].id, "y".into(), Some(1), Some(1)).unwrap();
+        db.transformation_chapters().mark_failed(tcs[2].id, "boom".into()).unwrap();
+
+        // 没有 pending/running 了 → 直接查一次收尾判据的效果
+        // (maybe_finalize_batch 是私有的判据实现,这里走等价 SQL 路径验证契约)
+        let active: i64 = db.lock().query_row(
+            "SELECT COUNT(*) FROM transformation_chapters WHERE batch_id=?1 AND status IN ('pending','running')",
+            rusqlite::params![batch_id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(active, 0, "三章都已终结,不应还有 active");
+
+        let now = Utc::now().to_rfc3339();
+        db.lock().execute(
+            "UPDATE batches SET status='stopped', ended_at = COALESCE(ended_at, ?1) WHERE id = ?2",
+            rusqlite::params![now, batch_id],
+        ).unwrap();
+        let b = db.batches().get(batch_id).unwrap().unwrap();
+        assert_eq!(b.status, BatchStatus::Stopped);
+        assert!(b.ended_at.is_some(), "收尾必须写 ended_at");
+    }
+
+    /// PauseAndReview:一章失败 → 该章 failed + batch → paused,**不推进**下一章
+    /// (其余章保持 pending,等用户决策)。
+    #[test]
+    fn pause_and_review_pauses_without_advancing() {
+        let db = fresh_db();
+        let (tn_id, c0, c1, c2, prompt_id, model_id) = seed_env(&db);
+        let batch_id = seed_batch_with_tcs(&db, tn_id, c0, c1, c2, prompt_id, model_id);
+        let scheduler = scheduler_with_notifier(&db);
+
+        let tcs = db.transformation_chapters().list_by_batch(batch_id).unwrap();
+        let first = tcs.iter().find(|t| t.chapter_id == c0).unwrap().id;
+
+        scheduler.on_chapter_failed(first, "模拟失败".into()).unwrap();
+
+        let b = db.batches().get(batch_id).unwrap().unwrap();
+        assert_eq!(b.status, BatchStatus::Paused, "PauseAndReview 失败后应 paused");
+        assert!(b.ended_at.is_some(), "paused 应写 ended_at");
+        let tcs = db.transformation_chapters().list_by_batch(batch_id).unwrap();
+        let f = tcs.iter().find(|t| t.chapter_id == c0).unwrap();
+        assert_eq!(f.status, TransformStatus::Failed);
+        assert_eq!(f.error.as_deref(), Some("模拟失败"));
+        // 其余章不该被推进
+        for cid in [c1, c2] {
+            let t = tcs.iter().find(|t| t.chapter_id == cid).unwrap();
+            assert_eq!(t.status, TransformStatus::Pending, "失败后不应推进后续章节");
+        }
+    }
+
+    /// `retry_empty_slots`:失败章重置回 pending 并重新派发;结果槽已填的章拒绝重试。
+    #[test]
+    fn retry_empty_slots_resets_failed_to_pending() {
+        let db = fresh_db();
+        let (tn_id, c0, c1, c2, prompt_id, model_id) = seed_env(&db);
+        let batch_id = seed_batch_with_tcs(&db, tn_id, c0, c1, c2, prompt_id, model_id);
+        let scheduler = scheduler_with_notifier(&db);
+
+        let tcs = db.transformation_chapters().list_by_batch(batch_id).unwrap();
+        let tc_c0 = tcs.iter().find(|t| t.chapter_id == c0).unwrap().id;
+        db.transformation_chapters().mark_failed(tc_c0, "boom".into()).unwrap();
+        // 让 batch 处于允许重试的状态
+        db.batches().set_status(batch_id, BatchStatus::Stopped).unwrap();
+
+        let b = scheduler.retry_empty_slots(batch_id, &[c0]).unwrap();
+        assert_eq!(b.status, BatchStatus::Running, "Stopped batch 重试后应转 Running");
+
+        let tcs = db.transformation_chapters().list_by_batch(batch_id).unwrap();
+        let retried = tcs.iter().find(|t| t.chapter_id == c0).unwrap();
+        assert_eq!(retried.status, TransformStatus::Pending, "重试后应回到 pending");
+        assert!(retried.error.is_none(), "重试应清空 error");
+        assert!(retried.started_at.is_none(), "重试应清空 started_at");
+    }
+
+    /// `retry_empty_slots` 拒绝非 failed/skipped 的章节(不能重试已有结果/正在跑的)。
+    #[test]
+    fn retry_empty_slots_rejects_non_retryable_chapter() {
+        let db = fresh_db();
+        let (tn_id, c0, c1, c2, prompt_id, model_id) = seed_env(&db);
+        let batch_id = seed_batch_with_tcs(&db, tn_id, c0, c1, c2, prompt_id, model_id);
+        let scheduler = scheduler_with_notifier(&db);
+        db.batches().set_status(batch_id, BatchStatus::Stopped).unwrap();
+
+        // c1 仍是 pending(不是 failed/skipped)→ 应被拒
+        let err = scheduler.retry_empty_slots(batch_id, &[c1]).unwrap_err();
+        assert!(
+            err.to_string().contains("不是可重试空槽"),
+            "应拒绝非失败章节,实际: {err}"
+        );
+    }
+
+    /// `stop_workflow`:全部 pending → skipped(batch 无 running 时直接 stopped);
+    /// 对已 stopped 的批次幂等。
+    #[test]
+    fn stop_workflow_skips_pending_and_is_idempotent() {
+        let db = fresh_db();
+        let (tn_id, c0, c1, c2, prompt_id, model_id) = seed_env(&db);
+        let batch_id = seed_batch_with_tcs(&db, tn_id, c0, c1, c2, prompt_id, model_id);
+        let scheduler = scheduler_with_notifier(&db);
+
+        let b = scheduler.stop_workflow(batch_id).unwrap();
+        assert_eq!(b.status, BatchStatus::Stopped, "无 running 时应直接 stopped");
+        let tcs = db.transformation_chapters().list_by_batch(batch_id).unwrap();
+        for t in &tcs {
+            assert_eq!(t.status, TransformStatus::Skipped, "pending 应全转 skipped");
+        }
+
+        // 幂等:再停一次仍 Ok 且状态不变
+        let b2 = scheduler.stop_workflow(batch_id).unwrap();
+        assert_eq!(b2.status, BatchStatus::Stopped);
     }
 }

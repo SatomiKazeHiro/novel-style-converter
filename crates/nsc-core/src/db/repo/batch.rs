@@ -6,6 +6,29 @@ use serde::Serialize;
 use crate::error::{Error, Result};
 use crate::models::{Batch, BatchStatus, NewBatch, OnFailurePolicy};
 
+/// `batch_from_row` 期望的列清单 —— **唯一真相**。
+///
+/// 抽出来的原因:这份清单曾在三处各写一遍,其中 `BatchScheduler::stop_workflow`
+/// 事务内回读那处漏了 7 列(prompt_id / model_config_id / mode / 4 个 ctx_*),
+/// 导致 `batch_from_row` 抛 `InvalidColumnIndex(8)` —— **"停止工作流"整条路径
+/// 每次真正执行都失败**。列清单与它的解析函数必须成对演进,收口到一处后,
+/// 任何按 `batch_from_row` 解析的查询都以本常量为前缀,漏列不再可能。
+///
+/// COALESCE 的原因:migration 0029 新增的 7 列 schema 是 nullable,而 `Batch`
+/// 结构体字段是 i32 / i64 / String(非 Option),遇 NULL 会抛
+/// `Invalid column type Null`(0029 的 backfill 引用了当时不存在的
+/// transformation_chapters.ctx_next_transformed → 该列永远 NULL)。
+/// 这是「schema nullable 时的安全降级」,不是 fallback。
+pub(crate) const BATCH_COLUMNS: &str = "\
+    id, transformation_novel_id, label, on_failure_policy, status, created_at, started_at, ended_at, \
+    COALESCE(prompt_id, 0) AS prompt_id, \
+    COALESCE(model_config_id, 0) AS model_config_id, \
+    COALESCE(mode, 'compress') AS mode, \
+    COALESCE(ctx_prev_original, 0) AS ctx_prev_original, \
+    COALESCE(ctx_prev_transformed, 0) AS ctx_prev_transformed, \
+    COALESCE(ctx_next_original, 0) AS ctx_next_original, \
+    COALESCE(ctx_next_transformed, 0) AS ctx_next_transformed";
+
 pub struct BatchRepo<'a> { pub(crate) conn: MutexGuard<'a, rusqlite::Connection> }
 
 impl<'a> BatchRepo<'a> {
@@ -34,42 +57,20 @@ impl<'a> BatchRepo<'a> {
     }
 
     pub fn get(&self, id: i64) -> Result<Option<Batch>> {
-        // COALESCE for the 7 fields added in migration 0029 — schema 是 nullable,
-        // Batch struct 字段是 i32 / i64 / String(非 Option),read 端遇到 NULL 直接抛
-        // Invalid column type Null(migration 0029 backfill 引用了不存在的
-        // transformation_chapters.ctx_next_transformed → ctx_next_transformed 永远 NULL)。
-        // COALESCE 是「schema nullable 时安全降级到 i32 默认值 0 / i64 默认值 0 /
-        // mode 默认 'compress'」,0 = ctx_next_transformed 的「无后文」语义,与
-        // WorkflowCreate 默认值(commit 1a7d845)对齐;不是 fallback。
-        let mut stmt = self.conn.prepare(
-            "SELECT id, transformation_novel_id, label, on_failure_policy, status, created_at, started_at, ended_at, \
-              COALESCE(prompt_id, 0) AS prompt_id, \
-              COALESCE(model_config_id, 0) AS model_config_id, \
-              COALESCE(mode, 'compress') AS mode, \
-              COALESCE(ctx_prev_original, 0) AS ctx_prev_original, \
-              COALESCE(ctx_prev_transformed, 0) AS ctx_prev_transformed, \
-              COALESCE(ctx_next_original, 0) AS ctx_next_original, \
-              COALESCE(ctx_next_transformed, 0) AS ctx_next_transformed \
-             FROM batches WHERE id = ?1",
-        )?;
+        // 列清单与 COALESCE 语义见 BATCH_COLUMNS 的文档。
+        let sql = format!("SELECT {} FROM batches WHERE id = ?1", BATCH_COLUMNS);
+        let mut stmt = self.conn.prepare(&sql)?;
         let mut rows = stmt.query(params![id])?;
         if let Some(row) = rows.next()? { Ok(Some(batch_from_row(row)?)) } else { Ok(None) }
     }
 
     pub fn list_by_tn(&self, tn_id: i64) -> Result<Vec<Batch>> {
-        // 同 get() 的 COALESCE 注释 —— 7 个新增列 schema nullable,read 端做 NULL→默认值
-        // 安全降级,避免 batch_from_row 抛 Invalid column type Null。
-        let mut stmt = self.conn.prepare(
-            "SELECT id, transformation_novel_id, label, on_failure_policy, status, created_at, started_at, ended_at, \
-              COALESCE(prompt_id, 0) AS prompt_id, \
-              COALESCE(model_config_id, 0) AS model_config_id, \
-              COALESCE(mode, 'compress') AS mode, \
-              COALESCE(ctx_prev_original, 0) AS ctx_prev_original, \
-              COALESCE(ctx_prev_transformed, 0) AS ctx_prev_transformed, \
-              COALESCE(ctx_next_original, 0) AS ctx_next_original, \
-              COALESCE(ctx_next_transformed, 0) AS ctx_next_transformed \
-             FROM batches WHERE transformation_novel_id = ?1 ORDER BY id DESC",
-        )?;
+        // 列清单见 BATCH_COLUMNS。
+        let sql = format!(
+            "SELECT {} FROM batches WHERE transformation_novel_id = ?1 ORDER BY id DESC",
+            BATCH_COLUMNS
+        );
+        let mut stmt = self.conn.prepare(&sql)?;
         let rows = stmt.query_map(params![tn_id], batch_from_row)?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
