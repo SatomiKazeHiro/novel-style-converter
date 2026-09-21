@@ -234,7 +234,6 @@ impl DefaultTransformer {
         self.transform_with_business(req, AiCallBusiness::TransformChapter).await
     }
 }
-
 #[async_trait]
 impl Transformer for DefaultTransformer {
     async fn transform(&self, req: TransformRequest) -> Result<TransformOutcome> {
@@ -265,7 +264,10 @@ mod tests {
             id: 1,
             name: "t".into(),
             kind: crate::models::PromptKind::Compress,
-            template: "{{chapter_content}}".into(),
+            // 用带 `---` 的模板,与内置模板形态一致(system 段 + user 段)。
+            // 只写 `{{chapter_content}}` 的话渲染结果只有 user 一条消息,
+            // 就测不到 system 侧的行为(close_thinking / custom_input 都加在 system 上)。
+            template: "你是编辑。章节:{{chapter_title}}\n---\n{{chapter_content}}".into(),
             is_builtin: false,
             archived: 0,
         };
@@ -337,5 +339,235 @@ mod tests {
             "前缀应只出现一次(双层前缀是回归): {msg}"
         );
         assert!(msg.contains("422"), "原始信息不应丢失: {msg}");
+    }
+
+    // ── 请求组装与记账 ─────────────────────────────────────────────────────
+    //
+    // 上面只覆盖了失败路径的错误传播。下面补的是 DefaultTransformer 的另一半职责:
+    // 把 prompt/参数组装成 wire 请求、并把每次调用记进 ai_call_logs。
+
+    /// 捕获「实际发出去的 ChatRequest」的 provider。
+    #[derive(Clone)]
+    struct CapturingProvider {
+        seen: Arc<std::sync::Mutex<Vec<ChatRequest>>>,
+        content: String,
+        tokens: (Option<i32>, Option<i32>),
+    }
+
+    #[async_trait]
+    impl AiProvider for CapturingProvider {
+        async fn chat(&self, req: ChatRequest) -> Result<ChatResponse> {
+            self.seen.lock().unwrap().push(req);
+            Ok(ChatResponse {
+                content: self.content.clone(),
+                tokens_in: self.tokens.0,
+                tokens_out: self.tokens.1,
+            })
+        }
+    }
+
+    /// 捕获 recorder 事件的假 recorder(AiCallRecorder::record 不阻塞)。
+    #[derive(Clone, Default)]
+    struct CapturingRecorder {
+        events: Arc<std::sync::Mutex<Vec<AiCallEvent>>>,
+    }
+
+    impl AiCallRecorder for CapturingRecorder {
+        fn record(&self, event: AiCallEvent) {
+            self.events.lock().unwrap().push(event);
+        }
+        fn pending(&self) -> usize { 0 }
+    }
+
+    fn capturing(
+        content: &str,
+        tokens: (Option<i32>, Option<i32>),
+    ) -> (Arc<CapturingProvider>, CapturingRecorder) {
+        (
+            Arc::new(CapturingProvider {
+                seen: Arc::new(std::sync::Mutex::new(Vec::new())),
+                content: content.into(),
+                tokens,
+            }),
+            CapturingRecorder::default(),
+        )
+    }
+
+    /// provider 收到的是 system + user 两条消息,且模板变量已替换。
+    #[tokio::test]
+    async fn sends_system_and_user_messages_with_rendered_placeholders() {
+        let (provider, recorder) = capturing("结果", (Some(1), Some(2)));
+        let t = DefaultTransformer::new(provider.clone(), Arc::new(recorder), Arc::new(Default::default()));
+        let out = t.transform(fixture_req()).await.unwrap();
+        assert_eq!(out.result_content, "结果");
+
+        let seen = provider.seen.lock().unwrap();
+        let req = seen.first().expect("provider 应被调用一次");
+        assert_eq!(req.messages.len(), 2, "模板有 --- → system + user");
+        assert_eq!(req.messages[0].role, Role::System);
+        assert_eq!(req.messages[1].role, Role::User);
+        assert!(req.messages[1].content.contains("正文"), "user 段应含渲染后的正文");
+        assert!(!req.messages[1].content.contains("{{"), "占位符应已全部替换");
+    }
+
+    /// 模型参数透传(temperature / max_tokens / model),不做任何改写。
+    #[tokio::test]
+    async fn forwards_model_params_verbatim() {
+        let (provider, recorder) = capturing("x", (None, None));
+        let t = DefaultTransformer::new(provider.clone(), Arc::new(recorder), Arc::new(Default::default()));
+        let mut req = fixture_req();
+        req.model_config.model = "my-model".into();
+        req.model_config.temperature = Some(0.42);
+        req.model_config.max_tokens = Some(1234);
+        t.transform(req).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        let sent = seen.first().unwrap();
+        assert_eq!(sent.model, "my-model");
+        assert_eq!(sent.temperature, Some(0.42));
+        assert_eq!(sent.max_tokens, Some(1234));
+    }
+
+    /// `custom_input` 非空时拼到 **system** 段末尾(预览的「附加指令」路径);
+    /// 为空/纯空白时与不带该字段的输出逐字节相同,不留下多余分隔。
+    #[tokio::test]
+    async fn custom_input_appends_to_system_only_when_non_empty() {
+        let (p1, r1) = capturing("x", (None, None));
+        let t1 = DefaultTransformer::new(p1.clone(), Arc::new(r1), Arc::new(Default::default()));
+        let mut base = fixture_req();
+        base.custom_input = None;
+        t1.transform(base).await.unwrap();
+        let baseline = p1.seen.lock().unwrap()[0].messages[0].content.clone();
+
+        for extra in ["请更口语化", "  请更口语化  "] {
+            let (p, r) = capturing("x", (None, None));
+            let t = DefaultTransformer::new(p.clone(), Arc::new(r), Arc::new(Default::default()));
+            let mut req = fixture_req();
+            req.custom_input = Some(extra.into());
+            t.transform(req).await.unwrap();
+            let sys = p.seen.lock().unwrap()[0].messages[0].content.clone();
+            assert!(sys.contains("附加指令"), "应加「附加指令」小节: {sys}");
+            assert!(sys.contains("请更口语化"));
+            assert!(sys.len() > baseline.len(), "应比无附加指令时更长");
+            // user 段不受影响
+            let user = p.seen.lock().unwrap()[0].messages[1].content.clone();
+            let base_user = p1.seen.lock().unwrap()[0].messages[1].content.clone();
+            assert_eq!(user, base_user, "附加指令不该改 user 段");
+        }
+
+        // 纯空白等价于没有
+        let (p, r) = capturing("x", (None, None));
+        let t = DefaultTransformer::new(p.clone(), Arc::new(r), Arc::new(Default::default()));
+        let mut req = fixture_req();
+        req.custom_input = Some("   \n  ".into());
+        t.transform(req).await.unwrap();
+        let sys = p.seen.lock().unwrap()[0].messages[0].content.clone();
+        assert_eq!(sys, baseline, "纯空白附加指令应与不传时逐字节相同");
+    }
+
+    /// `close_thinking` 名单里的模型 → system 末尾追加"禁止思考过程"指令,
+    /// 且请求体带 `reasoning_effort: "none"`(协议层 + prompt 层双保险)。
+    #[tokio::test]
+    async fn close_thinking_model_gets_prompt_hint_and_reasoning_effort() {
+        let (provider, recorder) = capturing("x", (None, None));
+        let mut close = HashSet::new();
+        close.insert("m".to_string());
+        let t = DefaultTransformer::new(provider.clone(), Arc::new(recorder), Arc::new(close));
+        t.transform(fixture_req()).await.unwrap();
+
+        let seen = provider.seen.lock().unwrap();
+        let sent = seen.first().unwrap();
+        assert_eq!(sent.reasoning_effort.as_deref(), Some("none"));
+        assert!(
+            sent.messages[0].content.contains("思考"),
+            "system 应追加禁止思考的指令: {}",
+            sent.messages[0].content
+        );
+    }
+
+    /// 不在名单里的模型:不塞 reasoning_effort,也不加提示(让模型自决)。
+    #[tokio::test]
+    async fn non_close_thinking_model_is_left_alone() {
+        let (provider, recorder) = capturing("x", (None, None));
+        let t = DefaultTransformer::new(provider.clone(), Arc::new(recorder), Arc::new(Default::default()));
+        t.transform(fixture_req()).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert!(seen[0].reasoning_effort.is_none());
+    }
+
+    /// MiniMax 模型额外塞协议层的 `thinking: "disabled"`(其 API 认这个字段名)。
+    #[tokio::test]
+    async fn minimax_model_gets_thinking_disabled_field() {
+        let (provider, recorder) = capturing("x", (None, None));
+        let t = DefaultTransformer::new(provider.clone(), Arc::new(recorder), Arc::new(Default::default()));
+        let mut req = fixture_req();
+        req.model_config.model = "MiniMax-M3".into();
+        t.transform(req).await.unwrap();
+        let seen = provider.seen.lock().unwrap();
+        assert_eq!(seen[0].thinking.as_deref(), Some("disabled"));
+    }
+
+    /// 记账:成功路径 events 恰好一条,status=Success,正文与 tokens 一致,
+    /// 且 estimated_tokens_in 已算出(非 None)。
+    #[tokio::test]
+    async fn records_one_success_event_with_usage() {
+        let (provider, recorder) = capturing("产出正文", (Some(11), Some(22)));
+        let events = recorder.events.clone();
+        let t = DefaultTransformer::new(provider, Arc::new(recorder), Arc::new(Default::default()));
+        t.transform(fixture_req()).await.unwrap();
+
+        let got = events.lock().unwrap();
+        assert_eq!(got.len(), 1, "每次调用恰好记一条");
+        let e = &got[0];
+        assert_eq!(e.business, AiCallBusiness::TransformChapter);
+        assert_eq!(e.status, AiCallStatus::Success);
+        assert_eq!(e.response_full, "产出正文");
+        assert_eq!(e.actual_tokens_in, Some(11));
+        assert_eq!(e.actual_tokens_out, Some(22));
+        assert!(e.estimated_tokens_in.is_some(), "粗估 tokens 应已填");
+        assert!(e.error.is_none());
+        assert_eq!(e.system_full, "你是编辑。章节:第一章", "system 段应是渲染后的模板首段");
+    }
+
+    /// 记账:失败路径也**必须**记一条(status=Failed + error),
+    /// 不能因为 `?` 提前返回而漏账。
+    #[tokio::test]
+    async fn records_one_failed_event() {
+        let recorder = CapturingRecorder::default();
+        let events = recorder.events.clone();
+        let t = DefaultTransformer::new(
+            Arc::new(FailingProvider), Arc::new(recorder), Arc::new(Default::default()));
+        let _ = t.transform(fixture_req()).await;
+
+        let got = events.lock().unwrap();
+        assert_eq!(got.len(), 1, "失败也要记账");
+        assert_eq!(got[0].status, AiCallStatus::Failed);
+        assert!(got[0].error.as_deref().unwrap().contains("422"));
+    }
+
+    /// 产出比例量测:TransformChapter 会算 ratio_note;
+    /// 压缩模板要求 30–50%,这里刻意返回极短正文 → 应被判越界。
+    #[tokio::test]
+    async fn ratio_note_flags_severely_short_output() {
+        // 输入约 30 字(含模板),输出 1 字 → 远低于 15% 下限
+        let (provider, recorder) = capturing("短", (None, None));
+        let events = recorder.events.clone();
+        let t = DefaultTransformer::new(provider, Arc::new(recorder), Arc::new(Default::default()));
+        t.transform(fixture_req()).await.unwrap();
+        let note = events.lock().unwrap()[0].ratio_note.clone();
+        assert!(note.is_some(), "极短输出应被比例护栏标记: {note:?}");
+        assert!(note.unwrap().contains("低于护栏"));
+    }
+
+    /// TestModel 业务不量测比例(输入是连通性探测串,无可比性)→ ratio_note 为 None。
+    #[tokio::test]
+    async fn test_model_business_skips_ratio_measurement() {
+        let (provider, recorder) = capturing("pong", (None, None));
+        let events = recorder.events.clone();
+        let t = DefaultTransformer::new(provider, Arc::new(recorder), Arc::new(Default::default()));
+        t.transform_with_business(fixture_req(), AiCallBusiness::TestModel).await.unwrap();
+        let e = events.lock().unwrap();
+        assert_eq!(e[0].business, AiCallBusiness::TestModel);
+        assert!(e[0].ratio_note.is_none(), "TestModel 不该做比例判定");
     }
 }

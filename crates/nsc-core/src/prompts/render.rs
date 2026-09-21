@@ -356,4 +356,162 @@ mod tests {
             .contains(&format!("预算={NEIGHBOR_CHAPTER_BUDGET}/{SLOT_BUDGET}")));
         assert!(rendered.system.is_some());
     }
+
+    // ── 占位符替换与 system/user 切分 ──────────────────────────────────────
+    //
+    // 上面 5 个测试覆盖的是「邻章预算」这条线;下面补的是最基础、也是内置模板
+    // 直接依赖的契约:所有 8 个变量真的被替换、`---` 真的切出两段。
+
+    fn ctx<'a>(
+        ch: &'a Chapter,
+        tn: &'a TransformationNovel,
+        body: &'a str,
+        prev_o: &'a [(String, String)],
+        prev_t: &'a [(String, String)],
+        next_o: &'a [(String, String)],
+    ) -> PromptContext<'a> {
+        PromptContext {
+            transformation_novel: tn,
+            chapter: ch,
+            chapter_content: body,
+            prev_original: prev_o,
+            prev_transformed: prev_t,
+            next_original: next_o,
+            kind: PromptKind::Compress,
+        }
+    }
+
+    /// 8 个占位符逐一验证替换结果 —— 内置模板用到的全在这里。
+    #[test]
+    fn all_documented_placeholders_are_substituted() {
+        let ch = chapter("第十章 归来", "本章正文");
+        let tn = novel();
+        let tmpl = "T={{chapter_title}}|C={{chapter_content}}|N={{novel_title}}\
+                    |PB={{prev_context_budget}}|TB={{total_context_budget}}";
+        let r = render(tmpl, &ctx(&ch, &tn, "本章正文", &[], &[], &[]));
+        let u = &r.user;
+        assert!(u.contains("T=第十章 归来"), "{u}");
+        assert!(u.contains("C=本章正文"), "{u}");
+        assert!(u.contains("N=测试书"), "{u}");
+        assert!(u.contains(&format!("PB={NEIGHBOR_CHAPTER_BUDGET}")), "{u}");
+        assert!(u.contains(&format!("TB={SLOT_BUDGET}")), "{u}");
+        assert!(!u.contains("{{"), "不应残留任何占位符: {u}");
+    }
+
+    /// 三个邻章占位符各自渲染成带定界与行号的块(不是空串)。
+    #[test]
+    fn neighbor_placeholders_render_blocks() {
+        let ch = chapter("当前章", "正文");
+        let tn = novel();
+        let prev_o = vec![("上一章".to_string(), "上一章正文".to_string())];
+        let prev_t = vec![("上一章".to_string(), "上一章改写后".to_string())];
+        let next_o = vec![("下一章".to_string(), "下一章正文".to_string())];
+        let r = render(
+            "PO={{prev_original}}\nPT={{prev_transformed}}\nNO={{next_original}}",
+            &ctx(&ch, &tn, "正文", &prev_o, &prev_t, &next_o),
+        );
+        assert!(r.user.contains("章节:上一章"), "prev_original 应渲染成块: {}", r.user);
+        assert!(r.user.contains("上一章正文"));
+        assert!(r.user.contains("上一章改写后"), "prev_transformed 应各自渲染");
+        assert!(r.user.contains("章节:下一章"));
+        assert!(r.user.contains("下一章正文"));
+    }
+
+    /// 三个邻章都为空时,对应位置是空串(不留悬挂定界符)。
+    #[test]
+    fn empty_neighbors_render_empty_strings() {
+        let ch = chapter("c", "body");
+        let tn = novel();
+        let r = render("A{{prev_original}}B{{prev_transformed}}C{{next_original}}D",
+            &ctx(&ch, &tn, "body", &[], &[], &[]));
+        assert_eq!(r.user, "ABCD", "空邻章不应产出任何定界或占位残留: {}", r.user);
+    }
+
+    /// `---` 独占一行 → 切成 system + user;两段各自做变量替换。
+    #[test]
+    fn split_marker_creates_system_and_user_sections() {
+        let ch = chapter("章", "正文");
+        let tn = novel();
+        let r = render("你是编辑。书={{novel_title}}\n---\n正文:{{chapter_content}}",
+            &ctx(&ch, &tn, "正文", &[], &[], &[]));
+        assert_eq!(r.system.as_deref(), Some("你是编辑。书=测试书"));
+        assert_eq!(r.user, "正文:正文");
+    }
+
+    /// 没有 `---` → 整段作 user,system 为 None(向后兼容旧模板)。
+    #[test]
+    fn template_without_marker_has_no_system_section() {
+        let ch = chapter("章", "正文");
+        let tn = novel();
+        let r = render("只有 user 段:{{chapter_content}}", &ctx(&ch, &tn, "正文", &[], &[], &[]));
+        assert!(r.system.is_none(), "无标记时不该凭空造 system 段");
+        assert_eq!(r.user, "只有 user 段:正文");
+    }
+
+    /// `---` 只切**第一个**:后面再出现 `---` 属于 user 段内容,不该再切。
+    #[test]
+    fn only_first_marker_splits() {
+        let ch = chapter("章", "正文");
+        let tn = novel();
+        let r = render("SYS\n---\nU1\n---\nU2", &ctx(&ch, &tn, "正文", &[], &[], &[]));
+        assert_eq!(r.system.as_deref(), Some("SYS"));
+        assert_eq!(r.user, "U1\n---\nU2", "第二个 --- 应留在 user 段里");
+    }
+
+    /// system 段为空(标记在首行)→ system 为 None,不产出空 system 消息。
+    #[test]
+    fn leading_marker_yields_no_system() {
+        let ch = chapter("章", "正文");
+        let tn = novel();
+        let r = render("---\n{{chapter_content}}", &ctx(&ch, &tn, "正文", &[], &[], &[]));
+        assert!(r.system.is_none(), "标记前为空时不应产生空 system 段");
+        assert_eq!(r.user, "正文");
+    }
+
+    /// 未知占位符**原样保留** —— 这是刻意设计,便于排查模板里写错的变量名。
+    /// (若改成静默替换成空串,写错变量名会变成"LLM 看不到内容"且毫无线索。)
+    #[test]
+    fn unknown_placeholder_is_left_literal() {
+        let ch = chapter("章", "正文");
+        let tn = novel();
+        let r = render("值={{nonexistent}} 与 {{chapter_title}}",
+            &ctx(&ch, &tn, "正文", &[], &[], &[]));
+        assert!(r.user.contains("{{nonexistent}}"), "未知占位符应原样保留: {}", r.user);
+        assert!(r.user.contains("章"), "已知占位符仍应正常替换");
+    }
+
+    /// 单花括号 / 不闭合的 `{{` 不应 panic,也不该吞掉后续文本。
+    #[test]
+    fn malformed_braces_do_not_panic_or_swallow_text() {
+        let ch = chapter("章", "正文");
+        let tn = novel();
+        for tmpl in ["单 {花括号}", "未闭合 {{chapter_title", "闭合但没有名字 {{}}", "}}{{"] {
+            let r = render(tmpl, &ctx(&ch, &tn, "正文", &[], &[], &[]));
+            assert!(!r.user.is_empty(), "模板 {tmpl:?} 不该产出空串");
+        }
+        // 未闭合的 {{ 之后的内容必须保留(不能因为找不到 }} 就丢掉)
+        let r = render("前缀 {{chapter_title 后文", &ctx(&ch, &tn, "正文", &[], &[], &[]));
+        assert!(r.user.contains("前缀"), "{r:?}");
+        assert!(r.user.contains("后文"), "未闭合占位符之后的文本不应被吞掉: {r:?}");
+    }
+
+    /// 同一占位符出现多次 → 每处都替换。
+    #[test]
+    fn repeated_placeholder_is_replaced_everywhere() {
+        let ch = chapter("标题甲", "正文");
+        let tn = novel();
+        let r = render("{{chapter_title}}/{{chapter_title}}/{{chapter_title}}",
+            &ctx(&ch, &tn, "正文", &[], &[], &[]));
+        assert_eq!(r.user, "标题甲/标题甲/标题甲");
+    }
+
+    /// 空模板 → 两段都空,不 panic。
+    #[test]
+    fn empty_template_is_safe() {
+        let ch = chapter("章", "正文");
+        let tn = novel();
+        let r = render("", &ctx(&ch, &tn, "正文", &[], &[], &[]));
+        assert!(r.system.is_none());
+        assert_eq!(r.user, "");
+    }
 }
