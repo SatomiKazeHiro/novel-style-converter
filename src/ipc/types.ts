@@ -283,7 +283,7 @@ export interface WorkflowSummary {
   ctx_next_original: number;
 }
 
-/** `list_workflow_chapters` 返回:tc 行 + 章节标题/idx + 关联结果槽预览。 */
+/** `list_workflow_chapters` 返回:tc 行 + 章节标题/idx + 原文字数/结果字数。 */
 export interface WorkflowChapterRow {
   tc_id: number;
   chapter_id: number;
@@ -291,7 +291,11 @@ export interface WorkflowChapterRow {
   chapter_title: string;
   status: TransformStatus;
   error: string | null;
-  content_preview: string | null;
+  /// 原文字数(`chapters.word_count`,zh-aware)。
+  source_word_count: number;
+  /// 结果字数(对完整结果现算);null = 结果槽为空。
+  /// 用它而不是字符数,是为了与列表里展示的"原字数"同口径。
+  result_word_count: number | null;
   is_empty_slot: boolean;
 }
 

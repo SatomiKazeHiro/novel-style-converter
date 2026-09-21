@@ -29,7 +29,7 @@ import Button from '../components/ui/Button.vue';
 import PageHeader from '../components/ui/PageHeader.vue';
 import IconArrowLeft from '~icons/lucide/arrow-left';
 import IconAlertTriangle from '~icons/lucide/alert-triangle';
-import { countWords, formatTime, formatWordCount } from '../utils/format';
+import { countWords, deltaPercent, formatDeltaPercent, formatTime, formatWordCount } from '../utils/format';
 import { confirmDialog } from '../composables/useConfirm';
 import CreateBatchDialog from '../components/CreateBatchDialog.vue';
 import PromoteWorkflowDialog from '../components/PromoteWorkflowDialog.vue';
@@ -118,16 +118,27 @@ const workflowChapterColumns = [
   { id: 'pick', header: '', enableSorting: false },
   { accessorKey: 'chapter_title', id: 'title', header: '标题', enableSorting: true },
   { id: 'status', header: '状态', enableSorting: true },
-  { accessorKey: 'content_preview', id: 'preview', header: '结果预览', enableSorting: false },
+  { accessorKey: 'source_word_count', id: 'src_words', header: '原字数', enableSorting: true },
+  { accessorKey: 'result_word_count', id: 'out_words', header: '现字数', enableSorting: true },
+  // 变化率方向是有意义的排序维度（压缩模式看谁压得过分，文风模式看谁跑飞）。
+  // 注意：列定义里的 header 不生效（表头走 #header-<id> 具名插槽），所以表头在模板里给。
+  { id: 'delta', enableSorting: true },
   { id: 'actions', header: '操作', enableSorting: false },
 ];
 const workflowChapterWidths: Record<string, number> = {
   pick: 40,
   title: 220,
   status: 110,
-  preview: 320,
+  src_words: 90,
+  out_words: 90,
+  delta: 100,
   actions: 200,
 };
+
+/// 字变率 = 结果字数 vs 原文字数，计算与格式化都在 utils/format（可单测）。
+function rowDelta(row: WorkflowChapterRow): number | null {
+  return deltaPercent(row.source_word_count, row.result_word_count);
+}
 
 // 章节来源 tab
 const selectedChapterIds = ref<Set<number>>(new Set());
@@ -1056,7 +1067,7 @@ watch(() => sources.value, (list) => {
         :row-key="(row: WorkflowChapterRow) => row.tc_id"
         :widths="workflowChapterWidths"
         :max-height="'calc(90vh - 200px)'"
-        :truncate-columns="['title', 'preview']"
+        :truncate-columns="['title']"
         frozen-column="actions"
         empty-text="暂无章节"
       >
@@ -1071,6 +1082,9 @@ watch(() => sources.value, (list) => {
             @change="onToggleAllRetry($event)"
           />
         </template>
+        <template #header-src_words><span class="num-head">原字数</span></template>
+        <template #header-out_words><span class="num-head">现字数</span></template>
+        <template #header-delta><span class="num-head">字变率</span></template>
         <template #cell-pick="{ row }">
           <!-- batch 状态允许重试时才显示 checkbox:整列勾选不可用时单选也没意义 -->
           <input
@@ -1088,6 +1102,28 @@ watch(() => sources.value, (list) => {
             <IconAlertTriangle class="warn-icon" />
           </span>
           <span class="status" :class="row.status">{{ formatChapterStatus(row.status) }}</span>
+        </template>
+        <template #cell-src_words="{ row }">
+          <span class="num">{{ row.source_word_count.toLocaleString() }}</span>
+        </template>
+        <template #cell-out_words="{ row }">
+          <span v-if="row.result_word_count !== null" class="num">
+            {{ row.result_word_count.toLocaleString() }}
+          </span>
+          <span v-else class="num muted">—</span>
+        </template>
+        <!-- 字变率:变长标红、变短标绿。绝对值 <1% 视为持平，不染色，
+             免得噪声占满一列颜色。压缩模式看谁压得过分(大负值)，
+             文风模式看谁跑飞(大正值)，所以两个方向都要显眼。 -->
+        <template #cell-delta="{ row }">
+          <span
+            v-if="rowDelta(row) !== null"
+            class="num delta"
+            :class="Math.abs(rowDelta(row)!) < 1
+              ? 'flat'
+              : (rowDelta(row)! > 0 ? 'up' : 'down')"
+          >{{ formatDeltaPercent(rowDelta(row)!) }}</span>
+          <span v-else class="num muted">—</span>
         </template>
         <template #cell-actions="{ row }">
           <!-- 详情：始终可见（看 source/transformed） -->
@@ -1435,6 +1471,16 @@ watch(() => sources.value, (list) => {
 }
 .dot-running { background: var(--color-cinnabar); animation: pulse 1.2s ease-in-out infinite; }
 .dot-pending { background: var(--text-muted); opacity: 0.55; }
+/* 字数与字变率列 —— 等宽数字右对齐，方便纵向扫读比较。 */
+.num-head { display: block; text-align: right; }
+.num { display: block; text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 12px; }
+.num.muted { color: var(--text-muted); }
+.delta { font-weight: 600; }
+/* 变长=红、变短=绿。压缩模式下"压得过分"是大负值(绿)，文风模式跑飞是大正值(红)，
+   两个方向都要一眼看出来。 */
+.delta.up { color: var(--danger); }
+.delta.down { color: var(--success); }
+.delta.flat { color: var(--text-muted); font-weight: 400; }
 /* 失败/跳过行的状态列前 ⚠️ 标识 —— 视觉上快速定位,完整错误去 Chapter Detail 看。 */
 .status-warn-mark { display: inline-flex; align-items: center; color: var(--danger); margin-right: 4px; }
 .warn-icon { width: 14px; height: 14px; flex-shrink: 0; }

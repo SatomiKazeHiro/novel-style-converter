@@ -8,8 +8,6 @@ use nsc_core::error::Error;
 use nsc_core::models::{Batch, BatchStatus, OnFailurePolicy, PromptKind, TransformStatus};
 use nsc_core::transformer::{BatchScheduler, WorkflowCreate};
 
-const CONTENT_PREVIEW_CHARS: usize = 80;
-
 /// IPC 边界的首章种子 DTO(spec 2026-09-01)—— 内嵌 source 字段区分来源。
 /// 后端 nsc_core::models::FirstChapterSeed + SeedSource。
 #[derive(Debug, Deserialize)]
@@ -141,7 +139,12 @@ pub struct WorkflowChapterRow {
     pub chapter_title: String,
     pub status: TransformStatus,
     pub error: Option<String>,
-    pub content_preview: Option<String>,
+    /// 原文字数（`chapters.word_count`，zh-aware，与落库口径一致）。
+    pub source_word_count: i32,
+    /// 结果字数 —— 对**完整** `wrc.content` 用同一个 `word_count()` 现算：
+    /// 不能拿 content_preview（已截断）去算，也不能拿 tc.result_content
+    /// （结果收口到结果集后它会被清空）。None = 结果槽为空。
+    pub result_word_count: Option<i32>,
     pub is_empty_slot: bool,
 }
 
@@ -284,7 +287,7 @@ pub fn list_workflow_chapters(
 
     let _dbg = db.lock();
     let mut stmt = _dbg.prepare(
-        "SELECT tc.id, tc.chapter_id, c.idx, c.title, tc.status, tc.error, wrc.content \
+        "SELECT tc.id, tc.chapter_id, c.idx, c.title, tc.status, tc.error, wrc.content, c.word_count \
          FROM transformation_chapters tc \
          JOIN chapters c ON c.id = tc.chapter_id \
          LEFT JOIN workflow_result_chapters wrc \
@@ -299,7 +302,10 @@ pub fn list_workflow_chapters(
             rusqlite::Error::FromSqlConversionFailure(4, rusqlite::types::Type::Text, e.into())
         })?;
         let content: Option<String> = row.get(6)?;
-        let preview = content.as_deref().map(preview_first_chars);
+        // 结果字数在 Rust 侧现算（SQLite 没有 zh-aware 字数）。
+        let result_word_count = content
+            .as_deref()
+            .map(|c| nsc_core::text::word_count(c));
         let is_empty = content.is_none();
         Ok(WorkflowChapterRow {
             tc_id: row.get(0)?,
@@ -308,17 +314,14 @@ pub fn list_workflow_chapters(
             chapter_title: row.get(3)?,
             status,
             error: row.get(5)?,
-            content_preview: preview,
+            source_word_count: row.get(7)?,
+            result_word_count,
             is_empty_slot: is_empty,
         })
     }).map_err(|e| e.to_string())?;
     let collected: Vec<WorkflowChapterRow> = rows.collect::<rusqlite::Result<Vec<_>>>()
         .map_err(|e| e.to_string())?;
     Ok(collected)
-}
-
-fn preview_first_chars(s: &str) -> String {
-    s.chars().take(CONTENT_PREVIEW_CHARS).collect()
 }
 
 #[tauri::command]

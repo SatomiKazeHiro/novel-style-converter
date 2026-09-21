@@ -104,3 +104,24 @@ export function formatTimeShort(iso: string | null | undefined): string {
   const pad = (n: number) => n.toString().padStart(2, "0");
   return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
 }
+
+/// 结果字数相对原文字数的变化率(%)。正数 = 变长，负数 = 变短。
+///
+/// 不可计算时返回 null（调用方显示占位符而不是 0，否则"无法计算"和"没变化"会混淆）：
+/// - `result` 为 null：结果槽还是空的，没有可比对象。
+/// - `source <= 0`：没有分母（原文 0 字）。
+export function deltaPercent(source: number, result: number | null): number | null {
+  if (result === null || source <= 0) return null;
+  return ((result - source) / source) * 100;
+}
+
+/// 变化率的显示文本：整数百分比 + 显式正负号（+12% / -38% / 0%）。
+///
+/// `Math.round(-0.4)` 得 `-0`，直接插值会渲染成 "-0%" —— 看起来像 bug，
+/// 这里统一归零。
+export function formatDeltaPercent(pct: number): string {
+  const rounded = Math.round(pct);
+  const normalized = rounded === 0 ? 0 : rounded;
+  return `${normalized > 0 ? '+' : ''}${normalized}%`;
+}
+

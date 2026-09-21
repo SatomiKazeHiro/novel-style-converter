@@ -22,7 +22,7 @@ const SOURCES = [
 
 const BATCH_TCS = [
   // 第 1 章已在 batch(章 50) → 该行 disabled
-  { tc_id: 1, chapter_id: 50, chapter_idx: 1, chapter_title: '第一章 开篇', status: 'completed', error: null, content_preview: '', is_empty_slot: false },
+  { tc_id: 1, chapter_id: 50, chapter_idx: 1, chapter_title: '第一章 开篇', status: 'completed', error: null, source_word_count: 1200, result_word_count: 900, is_empty_slot: false },
 ];
 
 // ─── Mocks ────────────────────────────────────────────────────────────────
