@@ -124,8 +124,8 @@ cargo test -p nsc-core --test queue_worker_panic
 cargo test -p nsc-core --test ai_openai
 ```
 
-**测试现状**:`crates/nsc-core/tests/` 下**已无空壳**,只剩 8 个真实集成测试文件;
-覆盖主力在 `src/` 内嵌的 `#[cfg(test)]` 模块(lib 单测 232 个,整仓 302 个用例)。
+**测试现状**:`crates/nsc-core/tests/` 下**已无空壳**,只剩 6 个真实集成测试文件;
+覆盖主力在 `src/` 内嵌的 `#[cfg(test)]` 模块(lib 单测 273 个,整仓 302 个用例)。
 
 | 文件 | 覆盖 |
 |---|---|
@@ -133,26 +133,18 @@ cargo test -p nsc-core --test ai_openai
 | `append_chapters.rs` | 追章节到 stopped batch |
 | `promotion_word_count.rs` | 转正路径的 word_count |
 | `chapters_idx_invariant.rs` | chapters.idx 不变式 |
-| `splitter_new.rs` | 章节切分 |
 | `queue_worker_panic.rs` | worker 的 per-job panic 边界 |
 | `ai_openai.rs` | `OpenAiProvider`(wiremock):usage 缺失、审核拦截、非 2xx |
-| `cleaner.rs` | 清洗规则 |
 
 约定:**新测试写进被测模块的 `#[cfg(test)] mod tests`**(同文件,能直接摸私有函数),
 不要再往 `tests/` 加集成文件。要动 `splitter` / `cleaner` / `batch_scheduler` /
-`db::repo` 之前先看该模块有没有 `mod tests`。
+`db::repo` 之前先看该模块有没有 `mod tests`(splitter 23 个、cleaner 18 个已在内嵌)。
 
 > **测"派发"必须断言终态,不能断言中间态。** `scheduler_with_notifier` 之类的夹具挂的是
 > **真 worker + 立即返回的 provider**,派发后数据库状态在另一个线程继续演进:断言"刚
 > reset 完 `started_at` 是 None"必然偶发失败(实测 15 次挂 1 次),`advance_batch` 还会
 > 顺手把下一章也跑掉。用轮询等终态(`batch_scheduler::tests::wait_chapter_status`),
 > 别用 `assert_eq!` 去赌时序。
-
-> **`README.md` 的对应章节已过时,不要照它做。** 它描述了不存在的测试
-> (`queue_provider` / `queue_notifier`)、`JobQueue` 的 worker 数与"上限 4"的强制、
-> 以及"`ModelConfig.concurrency` 未使用" —— 这些都与当前代码不符(以本文件为准)。
-> README 待单独校订。
-
 
 ### Architecture (current — post-Phase 11)
 
@@ -243,6 +235,14 @@ cargo test -p nsc-core --test ai_openai
     `[System.IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)` +
     `New-Object Text.UTF8Encoding($false)` 写回(无 BOM)。
   - 同理:模板里的引号一律用全角 `“ ”`,ASCII `"` 会截断 Rust 字符串字面量。
+  - **已经中招怎么查**:全仓扫 `鈹|鐢|璋冪|瀹归|瀛楁|鍛藉` 这类字符即可定位
+    (`Select-String -Path **/*.rs,*.ts -Pattern '鈹|鐢|璋冪'`)。2026-09 就发现
+    `src/ipc/types.ts` 88 行 + `src-tauri/src/lib.rs` 6 行中招 —— 注释全废、
+    代码仍能编译,所以没人察觉。
+  - **还原方法(机械可还原大部分)**:损坏是「UTF-8 字节 → 按 GBK 解码 → 再存 UTF-8」。
+    把 mojibake 文本按 GBK **反查回字节**、再按 UTF-8 解码即可,例如
+    `瀛楁鍛藉悕绾﹀畾` → `字段命名约定`。Node 下有现成路径(`TextDecoder('gbk')`
+    建反查表);但原字节中 GBK 无法表示的部分已被替换成 `?`,那些位置只能按上下文重写。
 - **`tauri.conf.json`** 的 `beforeDevCommand` / `beforeBuildCommand` 必须是
   `pnpm dev` / `pnpm build`(从仓库根运行);历史上出现过写死的绝对路径
   (`D:/NewCode/...`)。当前值正确,改配置时别退回绝对路径。
