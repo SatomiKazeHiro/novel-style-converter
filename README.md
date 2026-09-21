@@ -332,106 +332,30 @@ pnpm tauri build --bundles msi
 
 首次启动会在 `%APPDATA%/novel-style-converter/` 下创建 `data.db` 并自动 seed 两条内置 prompt。
 
-### Stage 0-2 范围（gpui-component 迁移第一、二、三阶段）
+### 迁移历史（已完成的演进，仅供理解现状来由）
 
-Stage 0(已完成):
-- 外壳: topbar(标题 + 主题切换) + sidebar(4 入口) + 内容区
-- Library 页: 列出数据库中所有小说 / 新建 / 删除 / 导入 .txt(自动编码检测:BOM / UTF-8 / GBK / chardetng 启发式)/ 阶段横幅(Idle / InProgress / Success / Failed / Cancelled)
-- 顶栏右侧按钮切换浅色 / 深色主题(不持久化)
+早期是 Rust + [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui) 桌壳，经历
+**iced 0.13 → gpui → Tauri 2** 三次迁移；前端从 gpui 原生组件换成 Vue 3。下面压缩记录，
+细节以代码为准 —— 本节提到的 `ui/*.rs`、`crates/nsc-desktop/`、`crates/gpui-prototype/`、
+`novels` 表都**已不存在**。
 
-Stage 1(已完成,2026-07-19,4 个 commit):
-- Models 页(`ui/models.rs`): ModelConfig 列表 / 新建 / 编辑 / 删除 / 测试连接
-- 表单字段: Name / Base URL / API key / Model / max_tokens / temperature / Concurrency
-- 表单解析独立函数 + 5 个单测(numeric / blank → None / rejects invalid / non-positive concurrency)
-- 异步"测试连接"实际发起一次 `chat` 调用,结果展示在底部横幅
-
-Stage 2(已完成,2026-07-19,7 个 commit):
-- Prompts 页(`ui/prompts.rs`): Prompt 列表 / 新建 / 编辑 / 删除 + 内置只读(`[复制内置]` 按钮 → 副本进入编辑模式)+ 同步渲染预览
-- 预览:7 个变量提示 + 4 个占位输入(章节标题 / 内容 / 前文原文 / 前文已转换)+ `[渲染]` 按钮调 `nsc-core` 新增的 `prompts::render_raw`
-- nsc-core 新增 `PromptVars` + `prompts::render_raw(template, &PromptVars)`,内部接受原始字符串无需加载真实 Novel/Chapter。`prompts::render` 重构为调 `render_raw`(签名不变,transformer 调用方零改动)
-  - ⚠️ 后续重构中 `render_raw` 已被**删除**（`prompts` 现在只导出 `render`）。上面是历史记录，不要照它找函数。
-- nsc-core 测试 +5(原 23 + 新 5 = 28),nsc-app 测试 +5(原 9 + 新 5 = 14)
-
-Stage 4(已完成,2026-07-20,9 commit:1 nsc-core + 8 nsc-app):
-- NovelDetail 页(`ui/novel_detail.rs`):顶部面包屑 + 小说元数据编辑 + 章节表全量 + 行内重命名 + 删除确认 + 新增章节 + 跳转 ChapterPreview/Transform
-- nsc-core 新增 `ChapterRepo::renumber(novel_id)` 保持 idx 连续,4 个测试(nsc-core 28 → 32)
-- 全量显示(不分页),章节表行操作:[预览][重命名][转换][删除]
-- 跳 ChapterPreview/Transform 占位路径已通(Stage 6/7 替换)
-- 已知限制:确认 modal 是 in-content 形式;重命名/删除/新增是两次独立 SQL 非事务(留 Stage 4.1)
-
-剩余页面(ChapterPreview / Transform / Queue)显示占位"该页面尚未迁移",后续每个页面单独 spec 迁移。
-
-### Vue 3 + Tauri 迁移（已完成 Phase 1-7,2026-07-22）
-
-Phase 1(已完成):Tauri 骨架 + Library CRUD
-- `crates/nsc-desktop/`(原 `nsc-app`)改为 Tauri 1.x 后端 + Vue 3 前端
-- 后端:`commands::novels::{list_novels, create_novel, delete_novel}`,`Arc<Mutex<Db>>` state
-- 前端:`stores/library.ts` + `views/Library.vue` + `components/NewNovelDialog.vue`
-- 路由:`/library` 接入 `AppShell.vue` 侧栏
-
-Phase 2(已完成):Models CRUD
-- 后端:`commands::models::{list_models, upsert_model, delete_model, test_model}`
-- 前端:`stores/models.ts` + `views/Models.vue` + `components/ModelDialog.vue`
-- 异步 `test_model` 实际发起 `chat` 调用
-
-Phase 3(已完成):Prompts CRUD + 预览
-- 后端:`commands::prompts::{list_prompts, upsert_prompt, delete_prompt, render_prompt_preview}`
-- 前端:`stores/prompts.ts` + `views/Prompts.vue` + `components/PromptDialog.vue`
-
-Phase 4(已完成):NovelDetail + el-table-v2 虚拟滚动
-- 后端:`commands/chapters.rs` 7 commands(list_meta / get / rename / delete / add / save_content / update_novel)
-- 前端:`stores/novelDetail.ts` + `views/NovelDetail.vue` + `components/ChapterRowActions.vue`
-- 解决 1623 章节全量渲染导致的卡死:`el-table-v2` + `el-auto-resizer`
-- Library 行点击 → 跳 `/novels/:id`
-
-Phase 5(已完成):Transform Dialog + 入队
-- 后端:`commands::transforms::{list_queue_snapshot, enqueue_transform}`,`JobQueue` 2 worker 在 `lib.rs` 启动
-- 前端:`stores/{queue,transforms}.ts` + `components/TransformDialog.vue`
-- NovelDetail 顶部加 P/R/D/F chip + "批量转换" 按钮
-
-Phase 6(已完成):Queue subscribe 事件
-- `JobQueue::set_notifier(handle)` 钩子,`lib.rs` 接 `emit_all("queue_changed")`
-- 前端 `queue.start()` 调 `listen` 订阅事件,替换 2s 轮询
-- 新增 `views/Queue.vue` + `components/JobList.vue`
-
-Phase 7(已完成):移除 gpui
-- `nsc-desktop/Cargo.toml` 去掉 `gpui` / `gpui-component` / `gpui-component-assets` / `rfd` / `chardetng` / `encoding_rs` / `tokio` 直接依赖
-- 删除 `crates/nsc-desktop/src/{ui,actions.rs,state.rs,page.rs}`
-- 删除 `crates/nsc-desktop/tests/transform_dialog.rs`(只测 gpui 端 helper)
-- 保留 `crates/gpui-prototype/` 作为 gpui playground(后续已移除,不再随仓库分发)
-
-Phase 8(已完成):Tauri 打包
-- `@tauri-apps/cli@1.6.3`(Tauri 1.x 末版)硬编码对 cargo 传 `--features custom-protocol`,但 tauri 1.8.3 已移除该 feature。在 `src-tauri/Cargo.toml` 加空 stub feature 让 cargo 接受 flag
-- `tauri.conf.json` 显式指定 `bundle.icon = ["icons/icon.ico"]`,MSI bundle 才不出 ICO 缺失错误
-- `tauri build --bundles msi` 产出 `target/release/bundle/msi/novel-style-converter_0.1.0_x64_en-US.msi`(3.8MB)
-- `--bundles nsis` 需联网下载 nsis-3.zip + nsis_tauri_utils.dll,当前环境 os error 10060,不可用
-
-Phase 9(已完成):经典 Tauri 布局重排
-- `crates/nsc-desktop/` → `src-tauri/`,`web/src/` → `src/`,`web/{index.html,vite.config.ts,...}` 升到根目录
-- 根 `package.json` 接管前端 + `@tauri-apps/cli@^1.6.3`,npm 切 pnpm(`pnpm install` 需 `pnpm approve-builds` 允许 esbuild + vue-demi postinstall)
-- `src-tauri/Cargo.toml` `nsc-core` path 改 `../crates/nsc-core`
-- `tauri.conf.json` `distDir: "../dist/"`,`beforeDev/BuildCommand` 用 `pnpm --prefix ..` 从 src-tauri/ 跑到根
-- `tauri dev` / `tauri build` 一律 `pnpm tauri <cmd>` 从仓库根发起
-- Cargo workspace `members` 加 `src-tauri`,`crates/nsc-desktop/` 删除
-
-Phase 10(已完成):Tauri IPC 入参 camelCase 约定
-- Tauri `#[tauri::command]` 自动给入参加 `#[serde(rename_all = "camelCase")]`,前端必须用 camelCase key 调用
-- `src/ipc/commands.ts` 顶部注释记录了当前规则:**外层 invoke 参数** camelCase(`dataAssetId` / `chapterIds` / `promptId` / `modelConfigId` / `ctxPrev*` / `ctxNext*` / `baseUrl` / `apiKey` / `maxTokens` 等),**内层 DTO** snake_case(`base_url` / `api_key` / `max_tokens` / ... — 后端显式 `#[serde(rename_all = "snake_case")]`),**响应类型** 保持 snake_case 以匹配 nsc-core 模型字段
-- 单字字段(`id` / `title` / `name`)不受 camelCase 影响
-
-Phase 11(已完成):Transform 结果查看页
-- `src/views/Transform.vue` + 4 个子组件:`TransformChapterNav`(章节翻页 + 上下文标题)、`TransformVersionTabs`(同章多次转换 tab)、`TransformCompareView`(左右栏对照 + 同步滚动)、`TransformResultFooter`(tokens / status / error / 重新转换)
-- 路由:`/novels/:novelId/chapters/:chapterId`,由 `ChapterRowActions.vue` 的「转换结果」按钮触发
-- 3 个新 IPC:`get_chapter_with_novel` / `list_transformations_by_chapter` / `list_chapter_ids_of_novel`,均走 camelCase 入参(`chapterId` / `novelId`)
-- `stores/transformView.ts`:并发加载 3 个 IPC(`Promise.all`)、翻页复用 chapterIds 缓存、tab 选中、失败原子清空避免旧数据泄漏;同小说重复 `load` 不再请求 `list_chapter_ids_of_novel`,跨小说则重新拉取
-- 全本翻页(◀ ▶)与空态("该章节还没有转换结果" / "加载失败" + 重试)
-- 全部状态 tab 覆盖 Pending / Running / Done / Failed / Cancelled;Failed 在对比区底部 alert 展示 `transformation.error`
-- 左右栏同步滚动(对比视图):滚动左 / 右时联动对侧
-- 复用 `TransformDialog` 重新转换(预填当前 transformation 的 mode / prompt / model / 三个 ctx 数);提交后回到页内 `load` 拉取最新结果
-- `NovelDetail.vue` 章节行「转换结果」是本阶段唯一入口;Queue 页 Done 行跳转该章的 Transform 页不在本阶段范围
-- 新增 13 个测试(commands 3 + transformView 10):`src/__tests__/commands.spec.ts` 覆盖 3 个新 IPC 的 camelCase 入参;`src/__tests__/transformView.spec.ts` 覆盖并发加载 / 翻页缓存 / 越界 / tab 选中 / 跨小说 / 失败原子清空等
-
-> **Phase 12+ 演进(2026-07-22 之后)**:Phase 1-11 的设计在后续被替换为 upload → parse → data_asset → transformation_novel 的四段式数据流。当前代码模型见上文「数据模型」章节:不再有 `novels` / `transformations` 表;`uploads` 持久化原文 + sha256,`data_assets` 表示一次解析结果(可锁定 / 重解析),`transformation_novels` 是独立转换目标(可对同一份 data_asset 起多本)。前端视图也对应替换:`/uploads`(Library uploads tab) → `/library/upload/:id` → `/library/upload/:id/parse` → `/library/data/:dataAssetId` → `/library/transform/:chapterId`。本节以下「使用流程」已按当前数据流重写。
+- **gpui 阶段**：外壳（topbar + sidebar + 主题切换）、Library / Models / Prompts / NovelDetail 页；
+  尝过全量渲染 1623 章节卡死 → 改用虚拟滚动。
+- **Phase 1-7（迁 Tauri + Vue）**：Tauri 1.x 骨架 + Library/Models/Prompts CRUD → NovelDetail 虚拟滚动
+  （`el-table-v2`）→ Transform 对话框入队 → Queue 事件订阅（`JobQueue::set_notifier` → `queue_changed`）→
+  彻底移除 gpui 依赖与 `crates/nsc-desktop/src/ui`。
+- **Phase 8（打包）**：MSI 产物 3.8 MB。踩到 `@tauri-apps/cli@1.6.3` 硬编码 `--features custom-protocol`
+  而 tauri 1.8.3 已移除该 feature，靠空 stub feature 过关；`--bundles nsis` 需联网下载，当时不可用。
+- **Phase 9（布局重排）**：`crates/nsc-desktop/` → `src-tauri/`，`web/*` 升到仓库根，npm 切 pnpm。
+- **Phase 10（IPC 约定）**：确立「外层 invoke 参数 camelCase / 内层 DTO 与响应 snake_case」，
+  见上文「已知 API 风险」。
+- **Phase 11（结果查看页）**：`Transform.vue` + 章节翻页 / 版本 tab / 左右对照 + 同步滚动 / tokens 页脚。
+- **Phase 12+（四段式数据流）**：`novels` / `transformations` 表被
+  upload → parse → data_asset → transformation_novel 取代，路由改为
+  `/uploads` → `/library/upload/:id(/parse)` → `/library/data/:dataAssetId` → `/library/transform/:chapterId`。
+  当前模型见上文「数据模型」。
+- **Phase 13+（批次与预览）**：引入 `batches` / `transformation_chapters(batch_id)` / 结果集
+  （`workflow_results`）/ `chapter_previews`，支持「先预览单章、再提交」与批次级失败策略。
 
 ### 已知 API 风险
 
@@ -610,7 +534,7 @@ DataAsset 页 → 选某个 transformation_novel → 章节行点 `[▶ 转换�
 
 ## 设计文档
 
-历史设计 spec 与实施 plan 未随仓库保留(早期版本相关)。本仓库的当前架构以本文档「数据模型」与「架构关键点」为准;新增功能前可参考本文档「Vue 3 + Tauri 迁移」章节下的 Phase 1-11 历史叙事。
+历史设计 spec 与实施 plan 未随仓库保留(早期版本相关)。本仓库的当前架构以本文档「数据模型」与「架构关键点」为准;想了解演进来由看「迁移历史」一节。
 
 ---
 
