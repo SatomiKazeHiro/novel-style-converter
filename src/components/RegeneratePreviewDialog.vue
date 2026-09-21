@@ -59,7 +59,7 @@
               v-for="(p, i) in previews"
               :key="p.id"
               class="tab"
-              :class="{ active: selectedPreviewId === p.id, [p.status]: true }"
+              :class="{ active: currentPreview?.id === p.id, [p.status]: true }"
               :title="previewTabTitle(p, i)"
               @click="selectedPreviewId = p.id"
             >
@@ -146,6 +146,9 @@ const previewsQuery = useQuery({
 });
 const previews = computed<ChapterPreviewRow[]>(() => previewsQuery.data.value ?? []);
 
+/// 「当前预览」是内容区与 tab 高亮的**唯一**判据（fallback 到第一条）。
+/// 不要另外用 selectedPreviewId 去判高亮 —— 放弃当前预览后 selectedPreviewId 为 null，
+/// 内容区经 fallback 显示了新的一条，而高亮却没有任何 tab 匹配得上（曾经的 bug）。
 const currentPreview = computed<ChapterPreviewRow | null>(
   () => previews.value.find(p => p.id === selectedPreviewId.value) ?? previews.value[0] ?? null,
 );
@@ -201,7 +204,10 @@ watch(open, async (v) => {
   origTab.value = 'cur';
   // previewsQuery 自动订阅(打开对话框时 enabled),无需手动 loadPreviews。
   try {
-    selectedPreviewId.value = previews.value[0]?.id ?? null;
+    // 每次打开都回到「最新一条」（列表按 id DESC，第一条即最新）：
+    // 置 null 表示"没有显式选择"，交给 currentPreview 的 fallback 决定，
+    // 避免在这里读 previews[0]（此刻列表往往还没加载，读到的是空的）。
+    selectedPreviewId.value = null;
     await loadOriginalBody(props.chapterId);
   } catch (e: unknown) {
     lastError.value = e instanceof Error ? e.message : String(e);
@@ -222,12 +228,14 @@ async function onGenerate(): Promise<void> {
   generating.value = true;
   lastError.value = null;
   try {
-    await store.regeneratePreview(
+    // 用返回的新 preview id 直接选中。不要读 previews[0] —— invalidate 之后这里
+    // 拿到的还是陈旧列表，会选中生成前的那一条（与 onDiscard / 高亮同一类问题）。
+    const newId = await store.regeneratePreview(
       props.batchId,
       props.chapterId,
       extraInput.value.trim() || null,
     );
-    selectedPreviewId.value = previews.value[0]?.id ?? null;
+    selectedPreviewId.value = newId;
     // previewsQuery.refetchInterval 在有 generating 时自动 1.5s 轮询,无需手写 setTimeout 循环
   } catch (e: unknown) {
     lastError.value = e instanceof Error ? e.message : String(e);
