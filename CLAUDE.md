@@ -66,22 +66,20 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 ## Skill routing
 
-When the user's request matches an available skill, invoke it via the Skill tool. When in doubt, invoke the skill.
+> 历史遗留提醒:本文件曾列过一套 `/office-hours`、`/investigate`、`/review` 之类的
+> 斜杠命令路由。经核实**本仓库并不存在这些命令**(既无 `.claude/commands/`,
+> 个人 skills 目录里也没有),照它调用只会失败 —— 已删除,不要再照那套走。
 
-Key routing rules:
-- Product ideas/brainstorming → invoke /office-hours
-- Strategy/scope → invoke /plan-ceo-review
-- Architecture → invoke /plan-eng-review
-- Design system/plan review → invoke /design-consultation or /plan-design-review
-- Full review pipeline → invoke /autoplan
-- Bugs/errors → invoke /investigate
-- QA/testing site behavior → invoke /qa or /qa-only
-- Code review/diff check → invoke /review
-- Visual polish → invoke /design-review
-- Ship/deploy/PR → invoke /ship or /land-and-deploy
-- Save progress → invoke /context-save
-- Resume context → invoke /context-restore
-- Author a backlog-ready spec/issue → invoke /spec
+实际可用的是环境里注册的 skills。调用前先看当前会话的 skill 目录,以其中的
+`description` 为准。与本项目相关的通常是:
+
+- 前端界面/样式改动 → `frontend-design`(产出避免通用 AI 审美)
+- Vue 里做 GSAP 动画 → `gsap-frameworks`(Vue/Svelte 生命周期与清理)
+- 查资料 / 网页检索 → `anysearch`
+- 找 / 装更多 skill → `find-skills`;自己写 skill → `skill-creator`
+
+其余通用排查(查 bug、审查 diff、写计划)没有对应 skill,直接按本文件开头
+1–4 条的准则做即可。
 
 ## Project: novel-style-converter
 
@@ -112,47 +110,150 @@ pwsh scripts/smoke.ps1
 # Frontend unit tests (vitest, mocks @tauri-apps/api/core)
 pnpm test
 
-# Rust core: db/repos, splitter, prompts, ai_openai (wiremock), transformer, queue
+# Frontend type check —— 前端唯一的静态门禁。
+# IPC 的 camelCase(外圈)/ snake_case(内层)翻译写错时,vitest 的 mock 抓不到,
+# 只有 typecheck 或真机跑一次能发现。改完 src/ipc/ 或 src/**/*.vue 请务必跑。
+pnpm typecheck
+
+# Rust core (unit tests 在 src/ 内嵌 #[cfg(test)])
 cargo test -p nsc-core
 
-# Single test file
-cargo test -p nsc-core --test splitter
-cargo test -p nsc-core --test queue
+# 单个集成测试文件
+cargo test -p nsc-core --test transformer_ctx
+cargo test -p nsc-core --test queue_worker_panic
 cargo test -p nsc-core --test ai_openai
 ```
 
+**测试现状(务必先读)**:`crates/nsc-core/tests/` 下大部分文件是**空壳** —— 内容为
+`#[ignore]` 的 `_placeholder`,0 断言(README 里描述的 `queue` / `scheduler` /
+`startup_recovery` 等集成测试在重构中被退役,尚未重写)。当前**真正有断言**的只有:
+
+| 文件 | 覆盖 |
+|---|---|
+| `transformer_ctx.rs` | `read_context` 的邻章切片顺序 |
+| `append_chapters.rs` | 追章节到 stopped batch |
+| `promotion_word_count.rs` | 转正路径的 word_count |
+| `chapters_idx_invariant.rs` | chapters.idx 不变式 |
+| `splitter_new.rs` | 章节切分 |
+| `queue_worker_panic.rs` | worker 的 per-job panic 边界 |
+| `ai_openai.rs` | `OpenAiProvider`(wiremock):usage 缺失、审核拦截、非 2xx |
+
+`cargo test -p nsc-core` 里 lib 单测是主要覆盖来源。**不要把空壳文件当成已覆盖**:
+要动 `splitter` / `cleaner` / `batch_scheduler` / `db::repo` 之前,先确认对应路径
+是否真的有用例(大概率没有,需自己补)。
+
+> **`README.md` 的对应章节已过时,不要照它做。** 它描述了不存在的测试
+> (`queue_provider` / `queue_notifier`)、`JobQueue` 的 worker 数与"上限 4"的强制、
+> 以及"`ModelConfig.concurrency` 未使用" —— 这些都与当前代码不符(以本文件为准)。
+> README 待单独校订。
+
+
 ### Architecture (current — post-Phase 11)
 
-- **Cargo workspace** at root: `crates/nsc-core` (pure lib) + `src-tauri` (shell). Single pnpm package at root.
-- **`crates/nsc-core/src/`** — no Tauri deps. Modules:
-  - `db/` (`pool`, `migrate`, 6 repos in `repo/`) · `models/` (Novel/Chapter/Prompt/ModelConfig/DataAsset/TransformationNovel/TransformationChapter)
-  - `ai/` (`AiProvider` trait + `OpenAiProvider` only) · `splitter/rules.rs` (zh/en chapter regex + blank-line fallback + zh-aware word_count)
-  - `prompts/` (builtin templates + `render` / `render_raw`) · `transformer/` (`JobQueue` worker pool + `DefaultTransformer`)
-  - `cleaner/` (清洗规则; see README) · `encoding/` (BOM/UTF-8/GBK/chardetng) · `text/` · `error.rs` (8 variants)
-- **`src-tauri/`** — Tauri 2 shell. `lib.rs` opens `%APPDATA%/novel-style-converter/data.db`, starts `JobQueue` (2 workers), seeds default `ModelConfig` from `.env`, then registers all commands. `commands/` modules: `models`, `uploads`, `chapters`, `cleaning`, `data_assets`, `transformation_novels`, `transformations`.
-- **`src/`** — Vue 3 frontend. Views: `Library` (uploads / data-assets / transformations tabs), `Models`, `Upload`, `parse` (chapter wizard), `DataAsset`, `Transform`. Stores: `library`, `models`, `chapters`, `dataAsset`, `transformView`, `theme`. Components in `src/components/`: dialogs, `Sidebar`, transform sub-components. IPC bindings live in `src/ipc/{commands.ts, types.ts}` — **hand-written, not generated**. Router: `src/router/index.ts` (`/uploads`, `/data-assets`, `/library/upload/:id`, `/library/upload/:id/parse`, `/library/data/:id`, `/library/transform/:chapterId`, `/models`).
+- **Cargo workspace** at root: `crates/nsc-core` (pure lib) + `src-tauri` (shell).
+  Single pnpm package at root. **不存在 `crates/nsc-desktop/`**(早期阶段的目录已移除)。
+- **`crates/nsc-core/src/`** — no Tauri deps. 顶层模块(改前先 `ls` 一次,别照抄本列表):
+  - `db/`(`pool`、`migrate`、`repo/` 下 13 个 repo 文件)· `models/`(Novel / Chapter /
+    Prompt / ModelConfig / DataAsset / TransformationNovel / TransformationChapter / Batch …)
+  - `ai/`(`AiProvider` trait + `OpenAiProvider`;`provider::describe_provider_error`
+    负责把 provider 错误翻成可操作提示)
+  - `splitter/rules.rs`(zh/en 章节正则 + 空行兜底 + zh-aware word_count)·
+    `cleaner/`(清洗规则)· `encoding.rs`(BOM / UTF-8 / GBK / chardetng)
+  - `prompts/`(builtin 模板 + `render`;system/user 以独占一行的 `---` 切分)·
+    `transformer/`(`JobQueue` worker pool + `DefaultTransformer` + `BatchScheduler` +
+    `ratio_guard` 产出比例量测)
+  - `recorder/`(AI 调用记账:非阻塞 channel + **自建 OS 线程**,线程内再建 tokio
+    current-thread runtime 落 `ai_call_logs`;不用 `tokio::spawn`,因为调用方线程
+    可能还没有 reactor —— 见模块头注释)· `catalog/`(模型目录)·
+    `sync.rs`(锁中毒恢复 + panic payload 解析,后台线程共用)·
+    `startup_cleanup.rs` / `startup_recovery.rs`(启动期自愈)·
+    `text.rs` + `text/` · `upload.rs` · `error.rs`(**9** variants)
+- **`src-tauri/`** — Tauri 2 shell。`lib.rs`:打开
+  `%APPDATA%/novel-style-converter/data.db` → 跑迁移 → `startup_recovery` /
+  `startup_cleanup` → `seed_builtin_prompts`(只 seed 内置 prompt 模板;Rust 侧
+  **没有**默认 ModelConfig 的 seed 逻辑,模型由用户在 UI 里配)→ 起 `JobQueue`(2 workers)
+  + `BatchScheduler` + recorder writer → 注册 70 个命令。
+  `commands/` 已拆为 13 个模块:`models` / `uploads` / `chapters` / `cleaning` /
+  `data_assets` / `transformation_novels` / `transformations` / `workflows` /
+  `prompts` / `ai_call_logs` / `catalog` / `overview` / `util`。
+  `.env` 只用于本地开发(`dotenvy` 读入,失败静默忽略)。
+- **`src/`** — Vue 3 frontend。`views/`:Library(uploads / data-assets /
+  transformations 三个 tab)、Models、Upload、parse(章节向导)、DataAsset、Transform、
+  TransformationNovelDetail、Prompts、AiCalls、Overview。`stores/`:library、models、
+  chapters、dataAsset、transformView、prompts、workflows、theme。`components/`(含
+  `ui/` 基础组件)、`composables/`、`utils/`、`types/`(全局 `.d.ts` shim)。
+  IPC 绑定在 `src/ipc/{commands.ts, types.ts}` —— **手写,不是生成的**。
+  Router `src/router/index.ts`:`/uploads`、`/data-assets`、`/transformations`、
+  `/library/upload/:uploadId`(+ `/parse`)、`/library/data/:dataAssetId`、
+  `/library/transform/:chapterId`、`/library/transformation/:tnId`、`/models`、
+  `/prompts`、`/ai-calls`、`/overview`。
 
 ### Critical invariants
 
-- **`Db` is `Send` but NOT `Sync`** (rusqlite `Connection` has internal `RefCell`).
-  - **Never** capture `Arc<Db>` into `tokio::spawn` / `spawn_blocking` closures or `Task::perform` futures.
-  - **Always** capture `db_path: PathBuf` and call `Db::open(&path)` inside the worker to get an owned `Db`.
-- **`JobQueue`** requires two factories: `db_factory()` returning owned `Result<Db>`, and `provider_factory(&ModelConfig)` returning owned `Box<dyn AiProvider>` (NOT a reference — `DefaultTransformer` owns the provider so it fits in `Box<dyn Transformer>`).
-- **Schema migrations** in `migrations/` (`0001_init.sql` … `0006_transformation_novels_data_asset_fk.sql`). All `CREATE TABLE` / `CREATE INDEX` use `IF NOT EXISTS` because worker factories reopen the same DB file repeatedly — must stay idempotent.
+- **`Db` 是 `Send + Sync`,可以自由跨线程共享。**
+  `Db` = `Mutex<Connection>`(`db/pool.rs`),拿它的方式一律是 `Arc<Db>`:
+  `Db::open()` / `Db::open_in_memory()` 返回 `Arc<Self>`,写操作靠内部的 Mutex 串行化,
+  provider worker / scheduler / recorder / 命令层共享**同一个** `Arc<Db>`。
+  **不要**再按"每个线程各自 `Db::open(path)`"来设计:
+  - ✅ `move || Ok(db.clone())`(克隆同一个 `Arc<Db>`)
+  - ❌ `move || Db::open(&db_path)`(多开 Connection,反而把已根治的 SQLITE_BUSY 请回来)
+  - ✅ 需要借用底层连接时用 `db.lock()`(返回 `MutexGuard<Connection>`);它走
+    `sync::lock_recover`,中毒时恢复而非 panic —— **全应用只有这一条 Connection**,
+    这里一旦 `expect` panic,中毒会传染给每个线程的每一次取锁。
+- **`JobQueue`** 需要两个工厂:
+  - `db_factory() -> Result<Arc<Db>>`(**返回 `Arc<Db>`,不是 owned `Db`**)
+  - `provider_factory(&ModelConfig) -> Box<dyn AiProvider>`(必须 owned:不能返回
+    `&dyn AiProvider`,否则装不进 `Box<dyn Transformer>`)
+- **worker 有 per-job panic 边界**:单个 job panic 会被 `catch_unwind` 隔离(记日志 +
+  标 failed + 继续消费下一个 job),不会带走 worker。给 worker 加新的 `await`/调用时
+  别把这层边界拆掉(见 `queue.rs` 里的注释)。
+- **Schema migrations** 在 `migrations/`(目前到 `0031_ai_call_log_ratio_note.sql`)。
+  DDL 保持 `IF NOT EXISTS`;`ALTER TABLE ... ADD COLUMN` **没有** `IF NOT EXISTS`
+  (SQLite 不支持),靠 `db/pool.rs::run_schemas` 的 `schema_versions` 表保证只跑一次 ——
+  所以**不要**依赖"migration 可以重复执行",而要保证"同一条 migration 只被记录执行一次"。
 - **IPC payload convention (Tauri 2)**:
-  - **Outer invoke args** are camelCased automatically by Tauri (e.g. `dataAssetId`, `chapterIds`, `promptId`, `modelConfigId`, `ctxPrev*`, `ctxNext*`, `baseUrl`, `apiKey`, `maxTokens`).
-  - **Inner DTOs** (e.g. `ModelConfigInput`, `EnqueuePayload`) keep snake_case fields (`base_url`, `api_key`, `max_tokens`, etc.) — backend uses explicit `#[serde(rename_all = "snake_case")]`. Frontend must NOT inline-rename these.
-  - **Response types** keep snake_case (match nsc-core model fields).
-  - See header comment of `src/ipc/commands.ts` for the canonical reference.
-- **API key**: plaintext in SQLite at `%APPDATA%/novel-style-converter/data.db`. Single-machine use. `.env` is gitignored; never commit real keys.
-- **JobQueue workers**: 2 default (lib.rs), 4 max. `ModelConfig.concurrency` field exists but unused — reserved for future per-model throttling.
-- **Failure handling**: worker does NOT auto-retry. Failed jobs stay `Failed` until user manually re-enqueues.
+  - **Outer invoke args** 由 Tauri 自动 camelCase(`dataAssetId`、`chapterIds`、
+    `promptId`、`modelConfigId`、`ctxPrev*`、`ctxNext*`、`baseUrl`、`apiKey`、`maxTokens`)。
+  - **Inner DTOs**(`ModelConfigInput`、`EnqueuePayload` 等)保持 snake_case
+    (`base_url`、`api_key`、`max_tokens`)—— 后端显式 `#[serde(rename_all = "snake_case")]`,
+    前端**不要** inline 改名。
+  - **Response types** 保持 snake_case(对齐 nsc-core 模型字段)。
+  - 权威参考见 `src/ipc/commands.ts` 头部注释。
+- **API key**:明文存在 `%APPDATA%/novel-style-converter/data.db`。单机用途。
+  `.env` 已 gitignore,**绝不提交真实 key**。归档 model 时 `api_key` 会被抹成空串。
+- **`JobQueue` workers**:`lib.rs` 起 2 个。**代码里没有"上限 4"的强制**,那只是设计意图。
+  `ModelConfig.concurrency` **已实现**并被使用:`provider_cache.rs` 按它建 per-model
+  信号量,`queue.rs` 每个 job 取一个 permit 限流(**不是** unused)。
+- **失败处置**:worker 不自动重试,失败章节停在 `Failed`,等用户在 UI 手动重跑。
+  注意 provider 侧的内容审核拦截(如 MiniMax 的 `422 new_sensitive`)是**确定性**的,
+  同一段正文重试必然再失败 —— 见 `ai::provider::describe_provider_error` 给出的提示。
 
 ### Common pitfalls
 
-- **`crates/nsc-desktop/` is an empty directory** (legacy from Phase 7-9). Don't add code here — the live shell is `src-tauri/`.
-- **`tauri.conf.json`** historically had wrong absolute paths (`D:/NewCode/...`) in `beforeDevCommand` / `beforeBuildCommand`. Must be `pnpm dev` / `pnpm build` (run from repo root).
-- **`vite.config.ts`** excludes `**/target/**`, `**/crates/**`, `**/src-tauri/**`, `**/migrations/**` from Vite watch — without this, cargo's rustdoc HTML triggers dep-scan explosion.
-- **Adding a new IPC command**: implement in `src-tauri/src/commands/<module>.rs`, register in `src-tauri/src/lib.rs` `invoke_handler!`, add typed wrapper to `src/ipc/commands.ts` (camelCase outer args, snake_case inner DTO), extend `src/ipc/types.ts` if needed, then write a `vitest` mock asserting the exact `invoke` call shape — the camelCase translation is easy to break silently (mocked IPC won't catch it).
-- **Adding a schema change**: bump `migrations/000N_*.sql` (never edit applied migrations); all DDL must remain `IF NOT EXISTS`; add a corresponding repo function in `crates/nsc-core/src/db/repo/`; export from `crates/nsc-core/src/db/mod.rs`; surface via a Tauri command only if frontend needs it.
+- **改 Rust 源码不要走 PowerShell 文本管线。** `Get-Content` 在中文 Windows 上会把
+  UTF-8 文件按 ANSI 读入,把**中文注释变成乱码、并吞掉换行**,`-replace` 批量替换后
+  写回就是整文件损坏(实测把两个 repo 文件改到无法编译,只能 `git checkout` 重做)。
+  - 改代码用编辑工具(会按 UTF-8 读写),或明确用
+    `[System.IO.File]::ReadAllText($p, [Text.Encoding]::UTF8)` +
+    `New-Object Text.UTF8Encoding($false)` 写回(无 BOM)。
+  - 同理:模板里的引号一律用全角 `“ ”`,ASCII `"` 会截断 Rust 字符串字面量。
+- **`tauri.conf.json`** 的 `beforeDevCommand` / `beforeBuildCommand` 必须是
+  `pnpm dev` / `pnpm build`(从仓库根运行);历史上出现过写死的绝对路径
+  (`D:/NewCode/...`)。当前值正确,改配置时别退回绝对路径。
+- **`vite.config.ts`** 的 `server.watch.ignored` 排除 `**/target/**`、`**/crates/**`、
+  `**/src-tauri/**`、`**/migrations/**`、`**/dist/**` —— 去掉后 cargo 的 rustdoc HTML
+  会触发依赖扫描爆炸。端口写死 43801 + `strictPort`。
+- **加 IPC 命令**:在 `src-tauri/src/commands/<module>.rs` 实现 → 在
+  `src-tauri/src/lib.rs` 的 `invoke_handler!` 注册 → 在 `src/ipc/commands.ts` 加类型化
+  wrapper(外圈 camelCase、内层 snake_case)→ 需要时扩 `src/ipc/types.ts` → 跑
+  `pnpm typecheck`(它能抓到 camelCase/snake_case 写错,`vitest` mock 抓不到)。
+- **加 schema 变更**:新增 `migrations/000N_*.sql`(**永不修改已应用的 migration**)→
+  在 `crates/nsc-core/src/db/migrate.rs` 的 `SCHEMAS` 末尾注册(注意 key 与文件名
+  历史上存在错位,见该文件内注释)→ `db/repo/` 加 repo 函数 → **若新增了 repo 文件**:
+  在 `db/repo/mod.rs` 里 `pub mod` + `pub use` 导出,并在 `db/pool.rs` 的 `Db` 上加
+  同名访问器(`pub fn xxx(&self) -> XxxRepo<'_> { XxxRepo { conn: self.lock() } }`)——
+  业务层一律通过 `db.xxx()` 拿 repo,不直接构造 → 只有前端需要时才加 Tauri 命令。
+  对**已存在的表**做 `ALTER TABLE ADD COLUMN` 时要自己验证"旧库升级"路径(见
+  `db/pool.rs::tests::ratio_note_migration_adds_column_to_existing_table` 的写法:
+  复制真实库 → 删列删版本记录 → 重开 → 断言)。
 
