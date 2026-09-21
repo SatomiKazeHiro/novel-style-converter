@@ -88,25 +88,6 @@
       </section>
     </div>
   </Dialog>
-
-    <!-- 填入草稿是**替换**语义：草稿已有内容时先确认，避免误覆盖手改过的文字。 -->
-    <ConfirmDialog
-      v-model:open="replaceDraftOpen"
-      title="填入草稿"
-      message="草稿区已有内容。填入草稿会用该预览替换现有草稿（不是追加）。确认替换？"
-      confirm-text="替换草稿"
-      kind="danger"
-      @confirm="doReplaceDraft"
-    />
-
-    <ConfirmDialog
-      v-model:open="commitConfirmOpen"
-      title="确认替换"
-      message="确认将草稿内容写入该章节的转换结果？此操作不可撤销。"
-      confirm-text="确认替换"
-      cancel-text="取消"
-      @confirm="doCommit"
-    />
 </template>
 
 <script setup lang="ts">
@@ -114,9 +95,8 @@ import { ref, computed, watch } from 'vue';
 import { useQuery } from '@tanstack/vue-query';
 import Dialog from './ui/Dialog.vue';
 import Button from './ui/Button.vue';
-import ConfirmDialog from './ui/ConfirmDialog.vue';
 import { getChapter as ipcGetChapter, listChapterPreviews, listTransformationSourceChapters } from '../ipc/commands';
-import { confirm } from '@tauri-apps/plugin-dialog';
+import { confirmDialog } from '../composables/useConfirm';
 import { countWords } from '../utils/format';
 import { useWorkflowsStore } from '../stores/workflows';
 import type { ChapterPreviewRow, PreviewStatus, SourceChapterRow } from '../ipc/types';
@@ -145,8 +125,6 @@ const origTab = ref<OrigTab>('cur');
 const selectedPreviewId = ref<number | null>(null);
 const generating = ref(false);
 const committing = ref(false);
-const commitConfirmOpen = ref(false);
-const replaceDraftOpen = ref(false);
 const discarding = ref(false);
 const lastError = ref<string | null>(null);
 const originalBody = ref('');
@@ -263,20 +241,25 @@ async function onUsePreview(): Promise<void> {
   if (!content) return;
   // 「填入草稿」是**替换**语义：草稿非空时先确认，避免悄悄覆盖用户手改过的文字。
   if (draftContent.value.trim()) {
-    replaceDraftOpen.value = true;
-    return;
+    const ok = await confirmDialog({
+      title: '填入草稿',
+      message: '草稿区已有内容。填入草稿会用该预览替换现有草稿（不是追加）。确认替换？',
+      confirmText: '替换草稿',
+      kind: 'danger',
+    });
+    if (!ok) return;
   }
   draftContent.value = content;
 }
 
-function doReplaceDraft(): void {
-  const content = currentPreview.value?.preview_content;
-  if (content) draftContent.value = content;
-}
-
-function onCommit(): void {
+async function onCommit(): Promise<void> {
   if (!canCommit.value) return;
-  commitConfirmOpen.value = true;
+  const ok = await confirmDialog({
+    title: '确认替换',
+    message: '确认将草稿内容写入该章节的转换结果？此操作不可撤销。',
+    confirmText: '确认替换',
+  });
+  if (ok) await doCommit();
 }
 
 async function doCommit(): Promise<void> {
@@ -300,18 +283,19 @@ async function doCommit(): Promise<void> {
 
 async function onDiscard(previewId: number): Promise<void> {
   if (discarding.value) return;
-  // 必须用插件的 confirm()：tauri-plugin-dialog 会把 window.confirm 改写成
-  // `plugin:dialog|confirm`，但该插件只注册了 message/open/save，ACL 里也没有任何
-  // 权限指向 `confirm` —— 于是 window.confirm 必然抛
-  // "dialog.confirm not allowed. Command not found"。插件自己的 confirm() 走
-  // `plugin:dialog|message`，是受支持的路径。
-  if (!(await confirm('放弃这个预览？', { title: '放弃预览', kind: 'warning' }))) return;
+  const ok = await confirmDialog({
+    title: '放弃预览',
+    message: '放弃这个预览？',
+    confirmText: '放弃',
+    kind: 'danger',
+  });
+  if (!ok) return;
   discarding.value = true;
   try {
-    await store.discardPreview(previewId);
-    if (selectedPreviewId.value === previewId) {
-      selectedPreviewId.value = previews.value[0]?.id ?? null;
-    }
+    await store.discardPreview(previewId, props.batchId, props.chapterId);
+    // 不能用 previews[0] 兜底 —— invalidate 之后这里拿到的还是**陈旧列表**，
+    // 会把刚放弃的那条重新选中。置 null，由 currentPreview 的 fallback 自动落到新的第一条。
+    if (selectedPreviewId.value === previewId) selectedPreviewId.value = null;
   } catch (e: unknown) {
     lastError.value = e instanceof Error ? e.message : String(e);
   } finally {

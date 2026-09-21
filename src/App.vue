@@ -5,12 +5,14 @@
       <router-view />
     </main>
     <TooltipHost />
+    <ConfirmHost />
   </div>
 </template>
 
 <script setup lang="ts">
 import Sidebar from './components/Sidebar.vue';
 import TooltipHost from './components/ui/TooltipHost.vue';
+import ConfirmHost from './components/ui/ConfirmHost.vue';
 </script>
 
 <style scoped>

@@ -170,7 +170,7 @@ import Button from './ui/Button.vue';
 import IconPauseCircle from '~icons/lucide/pause-circle';
 import IconSkipForward from '~icons/lucide/skip-forward';
 import { listModels, listPrompts, previewFirstChapter, getChapter } from '../ipc/commands';
-import { confirm } from '@tauri-apps/plugin-dialog';
+import { confirmDialog } from '../composables/useConfirm';
 import type { ModelConfig, Prompt, CreateWorkflowInput, FirstChapterSeedSource } from '../ipc/types';
 import { formatPromptKind } from '../utils/prompt-locale';
 
@@ -334,11 +334,13 @@ async function onCopyFromPreview() {
     seedSource.value = { kind: 'llm', tokens_in: out.tokens_in, tokens_out: out.tokens_out };
     return;
   }
-  // 用插件的 confirm()，不要用 window.confirm —— 理由见 RegeneratePreviewDialog.onDiscard。
-  const append = await confirm(
-    '转换结果区已有内容。\n点击"追加"=追加到末尾（保留现有内容）\n点击"替换"=替换当前内容',
-    { title: '填充转换结果区', okLabel: '追加', cancelLabel: '替换' },
-  );
+  // 追加/替换是双选题，用两个语义明确的按钮文案，而不是"确定/取消"。
+  const append = await confirmDialog({
+    title: '填入转换结果区',
+    message: '转换结果区已有内容。',
+    confirmText: '追加到末尾',
+    cancelText: '替换现有内容',
+  });
   if (append) {
     seedContent.value = seedContent.value + '\n\n' + out.content;
     // 追加: 保留原 seedSource(混合内容近似按原 source 标注)。
@@ -350,7 +352,13 @@ async function onCopyFromPreview() {
 
 async function onClearSeed() {
   if (!seedContent.value.trim()) return;
-  if (!(await confirm('清空转换结果区？', { title: '清空', kind: 'warning' }))) return;
+  const ok = await confirmDialog({
+    title: '清空转换结果区',
+    message: '清空转换结果区？此操作不可撤销。',
+    confirmText: '清空',
+    kind: 'danger',
+  });
+  if (!ok) return;
   seedContent.value = '';
   seedSource.value = null;
 }

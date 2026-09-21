@@ -91,12 +91,16 @@ export const useWorkflowsStore = defineStore('workflows', () => {
     return w;
   }
 
-  async function discardPreview(previewId: number): Promise<void> {
+  /// 放弃某条预览。**必须传 batchId/chapterId** —— 删完要 invalidate 对应该章节的
+  /// 预览列表，否则后端删了、缓存还留着，UI 上的 tab 与内容不会消失（曾漏掉这一步，
+  /// 表现为"点确定后没反应"）。
+  async function discardPreview(
+    previewId: number,
+    batchId: number,
+    chapterId: number,
+  ): Promise<void> {
     await discardChapterPreview(previewId);
-    // 不传 batchId/chapterId —— 找到包含该 preview 的 chapterPreviews key 重新加载。
-    // TanStack Query 没有"按值找 key"API;这里通过 store 保留的预览数据反查,或让调用方传 key。
-    // 调用方 RegeneratePreviewDialog.vue 会自己 invalidate,这里暂不处理未知 key 场景。
-    void previewId;
+    await queryClient.invalidateQueries({ queryKey: ['chapterPreviews', batchId, chapterId] });
   }
 
   return {
