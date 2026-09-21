@@ -242,44 +242,16 @@ CREATE TABLE transformation_chapters (
 
 ## 架构关键点
 
-### JobQueue worker pool
+模块地图、数据流、并发模型（worker pool / scheduler / recorder）、`Db` 所有权与
+「`db.lock()` 不可重入」、IPC 命名约定、启动顺序 —— 全部见
+**[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**。
 
-- 全局一个 `JobQueue`，**2 worker**（`src-tauri/src/lib.rs` 启动值；代码里没有"上限 4"的强制）
-- `JobQueue::new(workers, db_factory, provider_factory)` 接收两个工厂闭包
-- 每个 worker 在 `tokio::spawn` 启动时调 `db_factory()` 拿 **`Arc<Db>`**，循环 `rx.recv()` 取任务
-- `db_factory` 必须返回 `Result<Arc<Db>>`：全应用共享**同一条** `Mutex<Connection>` 连接，
-  worker 之间靠这把锁串行化写。**不要**改成每个 worker 各自 `Db::open(path)` —— 多开连接会把
-  已经根治的 SQLITE_BUSY 请回来
+这里只留读代码前值得知道的三条：
 
-### Send / Sync 边界
-
-`nsc_core::db::Db` 是 `Send + Sync`（内部就是 `Mutex<Connection>`，`Db::open()` 返回 `Arc<Db>`），
-可以自由跨线程共享：
-
-- **可以**把 `Arc<Db>` clone 进 worker 闭包 / scheduler / recorder（`move || Ok(db.clone())`）
-- 需要借用底层连接时用 `db.lock()`（返回 `MutexGuard<Connection>`），它走 `sync::lock_recover`，
-  中毒时恢复而非 panic
-- **`db.lock()` 不可重入**：一边持有 `db.xxx()` 返回的 repo guard 一边再取锁会**永久挂住**
-  （不是报错）。guard 活到语句结束，所以别把 `db.yyy()` 写进 `if let db.xxx()...` 的条件里
-
-`transformer::DefaultTransformer` 持有 owned `Box<dyn AiProvider>`（不借用），这样
-`Box<dyn Transformer>` 能装下整个 transformer 实例。
-
-### Schema migration
-
-`migrations/` 下现有 **31** 个 SQL 文件。DDL 保持 `IF NOT EXISTS`；但 `ALTER TABLE ... ADD COLUMN`
-SQLite **不支持** `IF NOT EXISTS`，靠 `db/pool.rs::run_schemas` 的 `schema_versions` 表保证每条只跑一次
-（启动时对同一个库反复跑迁移是常态，所以"已应用的迁移绝不重跑"是硬要求）。
-
-### 错误处理
-
-**9** 种 Error 变体（`Db` / `Io` / `Http` / `Ai` / `Splitter` / `Validation` / `NotFound` / `Serde` /
-`Other`），通过 `thiserror` 定义（`error.rs` 的文档注释写"8 变体 + 1 兜底"，`Other` 也是变体，共 9 个）。原则：
-
-- **不重试**：AI 失败标 `Failed`、写 `error`，让用户手动重试
-- **失败不弹模态**：仅更新表 + 发 UI 消息，在 Queue 页红点提示
-- **DB 错误透传**：让 stderr 输出错误，UI reload 后保持当前页
-- **token 计数**：依赖 provider 返回的 `usage.prompt_tokens / completion_tokens`，本地不另估
+- **worker 不自动重试**：AI 失败标 `failed`、写 `error`，等用户在 UI 手动重跑（避免 token 失控）。
+- **provider 不返回 `usage` 不构成失败**：`tokens_in/out` 落 NULL，不另估。
+- **`migrations/` 永不修改已应用的迁移**：`ALTER TABLE ADD COLUMN` 没有 `IF NOT EXISTS`，
+  靠 `schema_versions` 表保证每条只执行一次。
 
 ---
 
@@ -331,31 +303,6 @@ pnpm tauri build --bundles msi
 > 拒绝会导致 `pnpm dev` / `pnpm tauri dev` 启动失败(找不到 esbuild 可执行)。
 
 首次启动会在 `%APPDATA%/novel-style-converter/` 下创建 `data.db` 并自动 seed 两条内置 prompt。
-
-### 迁移历史（已完成的演进，仅供理解现状来由）
-
-早期是 Rust + [gpui](https://github.com/zed-industries/zed/tree/main/crates/gpui) 桌壳，经历
-**iced 0.13 → gpui → Tauri 2** 三次迁移；前端从 gpui 原生组件换成 Vue 3。下面压缩记录，
-细节以代码为准 —— 本节提到的 `ui/*.rs`、`crates/nsc-desktop/`、`crates/gpui-prototype/`、
-`novels` 表都**已不存在**。
-
-- **gpui 阶段**：外壳（topbar + sidebar + 主题切换）、Library / Models / Prompts / NovelDetail 页；
-  尝过全量渲染 1623 章节卡死 → 改用虚拟滚动。
-- **Phase 1-7（迁 Tauri + Vue）**：Tauri 1.x 骨架 + Library/Models/Prompts CRUD → NovelDetail 虚拟滚动
-  （`el-table-v2`）→ Transform 对话框入队 → Queue 事件订阅（`JobQueue::set_notifier` → `queue_changed`）→
-  彻底移除 gpui 依赖与 `crates/nsc-desktop/src/ui`。
-- **Phase 8（打包）**：MSI 产物 3.8 MB。踩到 `@tauri-apps/cli@1.6.3` 硬编码 `--features custom-protocol`
-  而 tauri 1.8.3 已移除该 feature，靠空 stub feature 过关；`--bundles nsis` 需联网下载，当时不可用。
-- **Phase 9（布局重排）**：`crates/nsc-desktop/` → `src-tauri/`，`web/*` 升到仓库根，npm 切 pnpm。
-- **Phase 10（IPC 约定）**：确立「外层 invoke 参数 camelCase / 内层 DTO 与响应 snake_case」，
-  见上文「已知 API 风险」。
-- **Phase 11（结果查看页）**：`Transform.vue` + 章节翻页 / 版本 tab / 左右对照 + 同步滚动 / tokens 页脚。
-- **Phase 12+（四段式数据流）**：`novels` / `transformations` 表被
-  upload → parse → data_asset → transformation_novel 取代，路由改为
-  `/uploads` → `/library/upload/:id(/parse)` → `/library/data/:dataAssetId` → `/library/transform/:chapterId`。
-  当前模型见上文「数据模型」。
-- **Phase 13+（批次与预览）**：引入 `batches` / `transformation_chapters(batch_id)` / 结果集
-  （`workflow_results`）/ `chapter_previews`，支持「先预览单章、再提交」与批次级失败策略。
 
 ### 已知 API 风险
 
@@ -534,7 +481,8 @@ DataAsset 页 → 选某个 transformation_novel → 章节行点 `[▶ 转换�
 
 ## 设计文档
 
-历史设计 spec 与实施 plan 未随仓库保留(早期版本相关)。本仓库的当前架构以本文档「数据模型」与「架构关键点」为准;想了解演进来由看「迁移历史」一节。
+当前架构（模块地图、数据流、并发模型、IPC 约定、启动顺序）见 **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**。
+历史设计 spec 与实施 plan 未随仓库保留。
 
 ---
 
