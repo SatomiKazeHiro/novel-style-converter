@@ -275,4 +275,114 @@ mod tests {
             assert_eq!(p.promoted_count, 0);
         }
     }
+
+    // ── insert / get / list / find_by_upload / delete ───────────────────────
+    //
+    // 上面两个测试走的是 promotion + list_with_upload 这条线;基础 CRUD 此前没测。
+
+    fn one_upload(db: &Db, sha: &str) -> i64 {
+        db.uploads().insert(&NewUpload {
+            sha256: sha.into(), filename: "f.txt".into(), byte_size: 100,
+            file_path: "/tmp/f.txt".into(), original_text: "原文".into(), word_count: 2,
+        }).unwrap()
+    }
+
+    /// insert → get 往返:kind 默认 'source'、note 默认空串、source_* 为 None。
+    #[test]
+    fn insert_defaults_kind_to_source_and_note_to_empty() {
+        let db = fresh_db();
+        let upload_id = one_upload(&db, "d1");
+        let da_id = db.data_assets().insert(&NewDataAsset {
+            upload_id, title: "我的资产".into(), source_filename: "f.txt".into(),
+            ..Default::default()
+        }).unwrap();
+
+        let got = db.data_assets().get(da_id).unwrap().unwrap();
+        assert_eq!(got.upload_id, upload_id);
+        assert_eq!(got.title, "我的资产");
+        assert_eq!(got.source_filename, "f.txt");
+        assert_eq!(got.kind, DataAssetKind::Source, "新建资产默认是 source");
+        assert_eq!(got.note, "", "note 默认为空串");
+        assert!(got.source_workflow_id.is_none());
+        assert!(got.source_data_asset_id.is_none());
+    }
+
+    /// **同一 upload 可以有多个 data_asset**(upload_id 上无 UNIQUE —— 0015 起的
+    /// 软引用设计)。这是"重新解析同一文件"能留下多条历史的前提。
+    #[test]
+    fn multiple_data_assets_can_share_one_upload() {
+        let db = fresh_db();
+        let upload_id = one_upload(&db, "d2");
+        let a = db.data_assets().insert(&NewDataAsset {
+            upload_id, title: "第一次解析".into(), source_filename: "f.txt".into(),
+            ..Default::default()
+        }).unwrap();
+        let b = db.data_assets().insert(&NewDataAsset {
+            upload_id, title: "第二次解析".into(), source_filename: "f.txt".into(),
+            ..Default::default()
+        }).unwrap();
+        assert_ne!(a, b);
+
+        let found: Vec<i64> = db.data_assets().find_by_upload(upload_id).unwrap()
+            .iter().map(|d| d.id).collect();
+        assert_eq!(found, vec![b, a], "find_by_upload 应返回该 upload 的全部资产(id DESC)");
+    }
+
+    /// find_by_upload 对无资产的 upload 返回空;list 全局按 id DESC。
+    #[test]
+    fn find_by_upload_scopes_and_list_orders_desc() {
+        let db = fresh_db();
+        let u1 = one_upload(&db, "d3");
+        let u2 = one_upload(&db, "d4");
+        assert!(db.data_assets().find_by_upload(u1).unwrap().is_empty(), "还没解析 → 空");
+
+        let a = db.data_assets().insert(&NewDataAsset {
+            upload_id: u1, title: "a".into(), source_filename: "f".into(), ..Default::default()
+        }).unwrap();
+        let b = db.data_assets().insert(&NewDataAsset {
+            upload_id: u2, title: "b".into(), source_filename: "f".into(), ..Default::default()
+        }).unwrap();
+
+        assert_eq!(db.data_assets().find_by_upload(u2).unwrap().len(), 1, "只返回自己的");
+        let ids: Vec<i64> = db.data_assets().list().unwrap().iter().map(|d| d.id).collect();
+        assert_eq!(ids, vec![b, a], "list 按 id DESC(最新在前)");
+    }
+
+    /// get 对不存在的 id 返回 None。
+    #[test]
+    fn get_missing_returns_none() {
+        let db = fresh_db();
+        assert!(db.data_assets().get(99999).unwrap().is_none());
+    }
+
+    /// 删 data_asset 级联清掉它的 chapters(0005 挂的 ON DELETE CASCADE)——
+    /// 顺序是 upload → da → chapters,所以删 da 必须把章节一起带走。
+    #[test]
+    fn delete_cascades_to_chapters() {
+        let db = fresh_db();
+        let da_id = seed_source(&db);
+        assert_eq!(db.chapters().list_by_data_asset(da_id).unwrap().len(), 1);
+
+        db.data_assets().delete(da_id).unwrap();
+
+        assert!(db.data_assets().get(da_id).unwrap().is_none(), "da 应被删");
+        assert_eq!(db.chapters().list_by_data_asset(da_id).unwrap().len(), 0,
+            "删 da 应级联删 chapters");
+    }
+
+    /// 库里出现未知 kind 字符串时**报错而不是静默降级** ——
+    /// 静默当成 source/promoted 会让"派生资产"被误认为源资产,影响转正与统计。
+    #[test]
+    fn unknown_kind_in_db_is_reported_not_defaulted() {
+        let db = fresh_db();
+        let da_id = seed_source(&db);
+        db.lock().execute("UPDATE data_assets SET kind = 'not_a_kind' WHERE id = ?1",
+            rusqlite::params![da_id]).unwrap();
+
+        let err = db.data_assets().get(da_id).unwrap_err();
+        assert!(
+            err.to_string().contains("unknown") || err.to_string().contains("kind"),
+            "未知 kind 应报错并说明原因,实际: {err}"
+        );
+    }
 }
