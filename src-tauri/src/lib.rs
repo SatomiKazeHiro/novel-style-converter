@@ -40,14 +40,14 @@ pub fn run() {
     db.seed_builtin_prompts()
         .expect("seed builtin prompts failed");
 
-    // 鈹€鈹€ AI 璋冪敤 recorder 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    // Channel 瀹归噺 4096;婊℃椂 drop new(涓嶉樆濉?hot path)銆俉riter 浠诲姟鎸?db_path 閲嶅紑
-    // DB 钀藉簱,worker 绾跨▼涓嶆寔 DB 鍙ユ焺,閬垮厤璺ㄧ嚎绋?Send/Sync 鎽╂摝銆?
-    // spawn_writer 鑷繁 std::thread::spawn + 鍐呭缓 tokio current_thread runtime,
-    // 涓嶄緷璧栬皟鐢ㄦ柟绾跨▼鏄惁鏈?tokio reactor(鏈?run() 鏄?builder 鍚屾闃舵,.run() 涔嬪墠
-    // 娌℃湁 reactor,鐩存帴 tokio::spawn 浼?panic "there is no reactor running")銆?
-    // handle 鐣欑潃 鈥斺€?app 閫€鍑烘椂 sender 琚?drop 鈫?channel 鍏抽棴 鈫?recv 杩斿洖 None
-    // 鈫?loop break,鏈€鍚庡嚑琛屾棩蹇楄兘钀藉畬銆備笉涓诲姩 abort,閬垮厤鎴柇銆?
+    // ── AI 调用 recorder ────────────────────────────────────────────────────
+    // Channel 容量 4096;满时 drop new(不阻塞 hot path)。Writer 任务按 db_path 重开
+    // DB 落库,worker 线程不持 DB 句柄,避免跨线程 Send/Sync 摩擦。
+    // spawn_writer 自己 std::thread::spawn + 内建 tokio current_thread runtime,
+    // 不依赖调用方线程是否在 tokio reactor(在 run() 是 builder 同步阶段,.run() 之前
+    // 没有 reactor,直接 tokio::spawn 会 panic "there is no reactor running")。
+    // handle 留着 —— app 退出时 sender 被 drop → channel 关闭 → recv 返回 None
+    // → loop break,最后几行日志能落完。不主动 abort,避免截断。
     let (recorder, rx) = ChannelRecorder::new(4096);
     let _writer_handle = spawn_writer(db.clone(), recorder.clone(), rx);
     let recorder: Arc<dyn AiCallRecorder> = Arc::new(recorder);
