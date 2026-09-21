@@ -37,6 +37,36 @@ const defaultProps = {
   previewChapterId: 100,
 };
 
+/// `wrapper.emitted('submit')` 的元素在 vue-test-utils 里是 `unknown`,
+/// 取 payload 前先断言成期望形状 —— 否则 `--noEmit` 类型检查会报 TS18046。
+type SubmitPayload = {
+  preview_first_chapter: {
+    content: string;
+    source: { kind: 'llm'; tokens_in: number | null; tokens_out: number | null } | { kind: 'manual' };
+  } | null;
+};
+
+function submitPayload(dialog: ReturnType<typeof mountDialog>): SubmitPayload {
+  const emitted = dialog.emitted('submit');
+  expect(emitted).toBeTruthy();
+  return emitted![0][0] as SubmitPayload;
+}
+
+/// 取 seed 并断言非空 —— `preview_first_chapter` 类型上是可空的,
+/// 测试里凡要读它的字段都应先过这里(否则 `--noEmit` 报 TS18047)。
+function submitSeed(dialog: ReturnType<typeof mountDialog>) {
+  const seed = submitPayload(dialog).preview_first_chapter;
+  expect(seed).not.toBeNull();
+  return seed!;
+}
+
+/// 取 LLM 来源的 seed 并收窄到 llm 分支(tokens 只在该分支上存在)。
+function submitLlmSeed(dialog: ReturnType<typeof mountDialog>) {
+  const seed = submitSeed(dialog);
+  expect(seed.source.kind).toBe('llm');
+  return { ...seed, source: seed.source as Extract<typeof seed.source, { kind: 'llm' }> };
+}
+
 function mountDialog(overrides: Record<string, unknown> = {}) {
   return mount(CreateBatchDialog, {
     props: { ...defaultProps, ...overrides },
@@ -80,9 +110,8 @@ describe('CreateBatchDialog: 首章种子可选化 (spec 2026-09-01)', () => {
     // 不调 previewFirstChapter;不手写
     await dialog.find('button.create-btn').trigger('click');
     await flushPromises();
-    const emitted = dialog.emitted('submit');
-    expect(emitted).toBeTruthy();
-    expect(emitted![0][0].preview_first_chapter).toBeNull();
+    const payload = submitPayload(dialog);
+    expect(payload.preview_first_chapter).toBeNull();
   });
 
   it('手写后提交： payload.preview_first_chapter.source = { kind: "manual" }', async () => {
@@ -93,9 +122,9 @@ describe('CreateBatchDialog: 首章种子可选化 (spec 2026-09-01)', () => {
     // 点击"创建"按钮
     await dialog.find('button.create-btn').trigger('click');
     await flushPromises();
-    const payload = dialog.emitted('submit')![0][0];
-    expect(payload.preview_first_chapter.content).toBe('我手写的内容');
-    expect(payload.preview_first_chapter.source).toEqual({ kind: 'manual' });
+    const seed = submitSeed(dialog);
+    expect(seed.content).toBe('我手写的内容');
+    expect(seed.source).toEqual({ kind: 'manual' });
   });
 
   it('生成预览 + 复制后提交： payload.preview_first_chapter.source = { kind: "llm", tokens_in, tokens_out }', async () => {
@@ -107,10 +136,9 @@ describe('CreateBatchDialog: 首章种子可选化 (spec 2026-09-01)', () => {
     await flushPromises();
     await dialog.find('button.create-btn').trigger('click');
     await flushPromises();
-    const payload = dialog.emitted('submit')![0][0];
-    expect(payload.preview_first_chapter.source.kind).toBe('llm');
-    expect(payload.preview_first_chapter.source.tokens_in).toBe(100);
-    expect(payload.preview_first_chapter.source.tokens_out).toBe(50);
+    const seed = submitLlmSeed(dialog);
+    expect(seed.source.tokens_in).toBe(100);
+    expect(seed.source.tokens_out).toBe(50);
   });
 
   it('切换 previewChapterId： seedContent / previewOutput 被清空', async () => {
@@ -189,8 +217,8 @@ describe('CreateBatchDialog: 首章种子可选化 (spec 2026-09-01)', () => {
     // 提交后 source 应该是 LLM
     await dialog.find('button.create-btn').trigger('click');
     await flushPromises();
-    const payload = dialog.emitted('submit')![0][0];
-    expect(payload.preview_first_chapter.source).toEqual({ kind: 'llm', tokens_in: 100, tokens_out: 50 });
+    const seed = submitSeed(dialog);
+    expect(seed.source).toEqual({ kind: 'llm', tokens_in: 100, tokens_out: 50 });
   });
 
   // 覆盖 seed-source-hint 的 v-if 分支（I-2）
@@ -232,8 +260,8 @@ describe('CreateBatchDialog: 首章种子可选化 (spec 2026-09-01)', () => {
     expect(hint).not.toContain('null');
     await dialog.find('button.create-btn').trigger('click');
     await flushPromises();
-    const payload = dialog.emitted('submit')![0][0];
-    expect(payload.preview_first_chapter.source).toEqual({
+    const seed = submitSeed(dialog);
+    expect(seed.source).toEqual({
       kind: 'llm', tokens_in: null, tokens_out: null,
     });
   });
