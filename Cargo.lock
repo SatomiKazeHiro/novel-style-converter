@@ -2044,6 +2044,7 @@ dependencies = [
  "chardetng",
  "chrono",
  "encoding_rs",
+ "futures-util",
  "once_cell",
  "regex",
  "reqwest 0.12.28",

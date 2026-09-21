@@ -77,13 +77,17 @@ impl Db {
 
     /// 取出底层 Connection 的临时借用。生命周期受 Db 本身,
     /// guard drop 时锁释放。事务代码用这条 (db.lock().unchecked_transaction())。
+    ///
+    /// 走 `sync::lock_recover` —— 中毒时恢复而非 panic。理由见 `crate::sync` 模块头:
+    /// `Db` 是全应用唯一共享 Connection,这里 `expect` 会让单次 worker panic
+    /// 升级成每个线程每次取锁都 panic。
     pub fn lock(&self) -> MutexGuard<'_, Connection> {
-        self.conn.lock().expect("db lock poisoned")
+        crate::sync::lock_recover(&self.conn, "db")
     }
 
     /// 直接执行一段 SQL —— 启动期迁移 / 测试 fixture 用。
     pub fn execute_batch(&self, sql: &str) -> rusqlite::Result<()> {
-        let guard = self.conn.lock().expect("db lock");
+        let guard = self.lock();
         guard.execute_batch(sql)
     }
 
@@ -116,7 +120,7 @@ impl Db {
     }
 
     pub fn applied_schema_versions(&self) -> Result<Vec<String>> {
-        let guard = self.conn.lock().expect("db lock");
+        let guard = self.lock();
         let mut stmt = guard.prepare(
             "SELECT version FROM schema_versions ORDER BY LENGTH(version), version",
         )?;

@@ -1,7 +1,9 @@
 use std::collections::HashSet;
+use std::panic::AssertUnwindSafe;
 use std::result::Result as StdResult;
 use std::sync::{Arc, Barrier};
 
+use futures_util::FutureExt;
 use tokio::sync::{mpsc, Mutex};
 
 use crate::ai::AiProvider;
@@ -18,6 +20,7 @@ use super::job::SharedQueue;
 
 pub type DbFactory = Arc<dyn Fn() -> Result<Arc<Db>> + Send + Sync>;
 pub type ProviderFactory = Arc<dyn Fn(&ModelConfig) -> Box<dyn AiProvider> + Send + Sync>;
+
 /// 队列状态变更回调。`(tid, success, error, content)`:
 /// - `enqueue` → `(tid, false, None, "")`
 /// - Done → `(tid, true, None, <正文>)`
@@ -53,10 +56,10 @@ pub struct JobQueue {
 impl JobQueue {
     /// 启动 `workers` 个 tokio current-thread worker,共享一个 mpsc 队列。
     ///
-    /// **工厂闭包是 JobQueue 能跨线程工作的核心**(因为 `Db` 不是 `Sync`,
-    /// `AiProvider` 不是 `Send` 共享的)。
-    /// - `db_factory`:每个 worker 启动时调一次,拿到**独立 owned** `Db`。
-    ///   典型实现:`move || Ok(Db::connect(&db_path))`。
+    /// **工厂闭包是 JobQueue 能跨线程工作的核心**(`AiProvider` 不共享单实例)。
+    /// - `db_factory`:每个 worker 启动时调一次。典型实现是克隆同一个 `Arc<Db>`
+    ///   (`move || Ok(db.clone())`)—— `Db` 内部是 `Mutex<Connection>`,多线程共享
+    ///   是设计意图(见 db/pool.rs 顶部注释)。返回值是 `Arc<Db>` 而不是 owned `Db`。
     /// - `provider_factory`:每个 job 调一次,基于 `ModelConfig` 生成 owned
     ///   `Box<dyn AiProvider>`。**必须返回 owned**(不能返回 `&'a dyn AiProvider`),
     ///   否则 `Box<dyn Transformer>` 装不下。
@@ -112,15 +115,19 @@ impl JobQueue {
                     .build()
                 {
                     Ok(rt) => rt,
-                    Err(_) => {
+                    Err(e) => {
+                        // 不能静默:这个 worker 从此不会消费任何 job,若不上报,
+                        // UI 会停在 pending 而无人知道为什么。
+                        eprintln!("[queue] worker runtime 构建失败,该 worker 不参与消费: {e}");
                         ready.wait();
                         return;
                     }
                 };
                 rt.block_on(async move {
-                    let mut db = match db_factory() {
+                    let db = match db_factory() {
                         Ok(d) => d,
-                        Err(_) => {
+                        Err(e) => {
+                            eprintln!("[queue] db_factory 失败,该 worker 不参与消费: {e}");
                             ready.wait();
                             return;
                         }
@@ -136,11 +143,37 @@ impl JobQueue {
                         // cache miss 时通过 provider_factory 重建一次,后续 job 直接命中。
                         let cached = cache.get_or_create(&job.model_config)
                             .expect("provider cache get_or_create");
-                        db = run_job(shared.clone(), db, cached.provider, cached.sem, job, notify.clone(), pending_callbacks.clone(), recorder.clone(), close_thinking.clone()).await;
-                        // drain pending notifier callbacks(锁内 swap,锁外 invoke)
-                        // 切断 `fire → cb → enqueue → fire → ...` 的同步递归链 —— 栈深度恒为 1。
-                        let drained: Vec<CallbackEnvelope> = {
-                            let mut g = pending_callbacks.lock().expect("callbacks lock");
+                        // ── per-job panic 边界 ──
+                        // 单个章节的 panic 不能带走整个 worker:worker 死了之后
+                        // channel 里后续 job 无人消费,UI 停在 pending 且没有任何提示。
+                        // 缓存/信号量/Db 都是共享的,pinned 在闭包外 —— 即使内部 panic,
+                        // 它们仍然有效,循环可以继续消费下一个 job。
+                        // 注:必须用 futures_util::FutureExt::catch_unwind(async 块不能用
+                        // std::panic::catch_unwind 包:panic 是在 poll 时从 future 内部
+                        // unwind 出来的)。
+                        let tid = job.tc_id;
+                        let tn_id = job.tn_id;
+                        // 供 panic 边界使用 —— job 被 run_job 消费后就取不到了。
+                        let chapter_title = job.chapter.title.clone();
+                        let chapter_idx = job.chapter.idx;
+                        let drained = {
+                            let work = run_job(shared.clone(), db.clone(), cached.provider, cached.sem, job, notify.clone(), pending_callbacks.clone(), recorder.clone(), close_thinking.clone());
+                            let result = AssertUnwindSafe(work).catch_unwind().await;
+                            if let Err(payload) = result {
+                                let msg = crate::sync::panic_message(&payload);
+                                eprintln!("[queue] job tc={tid} 线程内 panic,已隔离并继续消费: {msg}");
+                                // 尽力把该章标失败,避免永久卡在 running。
+                                // 失败也不致命 —— 至少 panic 已被记录且 worker 活着。
+                                let _ = db.transformation_chapters()
+                                    .mark_failed(tid, format!("内部错误(panic): {msg}"));
+                                // 同步进队列快照:UI 轮询的是快照而非 DB,
+                                // 少了这一步该章会从 UI 上凭空消失(done/failed 都没有它)。
+                                push_failed(&shared, tid, tn_id, chapter_title, chapter_idx,
+                                    format!("内部错误(panic): {msg}")).await;
+                            }
+                            // drain pending notifier callbacks(锁内 swap,锁外 invoke)
+                            // 切断 `fire → cb → enqueue → fire → ...` 的同步递归链 —— 栈深度恒为 1。
+                            let mut g = crate::sync::lock_recover(&pending_callbacks, "callbacks");
                             std::mem::take(&mut *g)
                         };
                         for env in drained {
@@ -157,7 +190,7 @@ impl JobQueue {
     /// 注册队列变更回调。每次 `enqueue` / job 状态转换(Running / Done / Failed)末尾触发。
     /// 闭包在 worker 线程上执行 —— 不要在闭包里做重活或再次阻塞。
     pub fn set_notifier(&self, notifier: Notifier) {
-        *self.notify.lock().expect("notify lock") = Some(notifier);
+        *crate::sync::lock_recover(&self.notify, "notify") = Some(notifier);
     }
 
     /// 入队一个 notifier 回调(不立即执行)。
@@ -173,13 +206,11 @@ impl JobQueue {
         error: Option<String>,
         content: String,
     ) {
-        let cb = notify
-            .lock()
-            .expect("notify lock")
+        let cb = crate::sync::lock_recover(notify, "notify")
             .as_ref()
             .cloned();
         if let Some(cb) = cb {
-            let mut g = callbacks.lock().expect("callbacks lock");
+            let mut g = crate::sync::lock_recover(callbacks, "callbacks");
             g.push(CallbackEnvelope { cb, tid, success, error, content });
         }
     }
@@ -243,7 +274,7 @@ async fn run_job(
     callbacks: PendingCallbacks,
     recorder: Arc<dyn AiCallRecorder>,
     close_thinking: Arc<HashSet<String>>,
-) -> Arc<Db> {
+) {
     let tid = job.tc_id;
     let chapter_title = job.chapter.title.clone();
     let chapter_idx = job.chapter.idx;
@@ -255,7 +286,7 @@ async fn run_job(
             let _ = db.transformation_chapters().mark_failed(tid, err.clone());
             push_failed(&shared, tid, job.tn_id, String::new(), 0, err.clone()).await;
             JobQueue::queue_callback(&notify, &callbacks, tid, false, Some(err), String::new());
-            return db;
+            return;
         }
     };
 
@@ -309,8 +340,6 @@ async fn run_job(
             JobQueue::queue_callback(&notify, &callbacks, tid, false, Some(err), String::new());
         }
     }
-
-    db
 }
 
 /// 同步读所有 job 上下文:从 uploads.original_text 切片 chapter / 邻章正文。

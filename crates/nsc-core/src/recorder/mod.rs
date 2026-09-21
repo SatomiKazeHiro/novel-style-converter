@@ -152,13 +152,9 @@ pub fn spawn_writer(
             rt.block_on(run_writer(db, &mut rx, &recorder));
         }));
         if let Err(payload) = result {
-            let msg = if let Some(s) = payload.downcast_ref::<&'static str>() {
-                (*s).to_string()
-            } else if let Some(s) = payload.downcast_ref::<String>() {
-                s.clone()
-            } else {
-                "unknown panic payload".to_string()
-            };
+            // 走共用的 payload 解析 —— 此处原先自己写了一份 downcast,语义与
+            // queue.rs 的同类逻辑重复;收口到 crate::sync::panic_message。
+            let msg = crate::sync::panic_message(&payload);
             eprintln!("[recorder] writer thread panic: {msg} —— ai_call_logs 不再落库,重启 app 才能恢复");
         }
     })

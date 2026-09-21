@@ -54,7 +54,7 @@ impl ProviderCache {
     pub fn get_or_create(&self, model_config: &ModelConfig) -> Result<CachedProvider> {
         let key = model_config.id;
         {
-            let guard = self.inner.lock().expect("provider cache lock");
+            let guard = crate::sync::lock_recover(&self.inner, "provider cache");
             if let Some(entry) = guard.get(&key) {
                 return Ok(CachedProvider {
                     provider: entry.provider.clone(),
@@ -67,7 +67,7 @@ impl ProviderCache {
         let provider: Arc<dyn AiProvider> = Arc::from(provider);
         let permits = model_config.concurrency.max(1) as usize;
         let sem = Arc::new(Semaphore::new(permits));
-        let mut guard = self.inner.lock().expect("provider cache lock");
+        let mut guard = crate::sync::lock_recover(&self.inner, "provider cache");
         // double-check:避免并发 miss 时重复创建。
         if let Some(entry) = guard.get(&key) {
             return Ok(CachedProvider {
@@ -83,6 +83,6 @@ impl ProviderCache {
     /// 目前未挂到 IPC(用户可重启 app 等同于清空)。
     #[allow(dead_code)]
     pub fn clear(&self) {
-        self.inner.lock().expect("provider cache lock").clear();
+        crate::sync::lock_recover(&self.inner, "provider cache").clear();
     }
 }

@@ -5,6 +5,7 @@ pub mod ai;
 pub mod splitter;
 pub mod encoding;
 pub mod text;
+pub mod sync;
 pub mod transformer;
 pub mod upload;
 pub mod prompts;
