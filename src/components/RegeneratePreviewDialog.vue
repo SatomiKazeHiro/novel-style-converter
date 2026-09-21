@@ -33,7 +33,7 @@
           <textarea
             v-model="draftContent"
             :disabled="committing"
-            placeholder="点击 [使用此预览填充草稿] 拷入，或手动编辑..."
+            placeholder="点击 [填入草稿] 拷入，或手动编辑..."
           />
         </div>
         <div class="actions">
@@ -63,8 +63,7 @@
               :title="previewTabTitle(p, i)"
               @click="selectedPreviewId = p.id"
             >
-              <span>预览 {{ previews.length - i }}</span>
-              <span class="status">{{ statusGlyph(p.status) }}</span>
+              预览 {{ previews.length - i }}
             </button>
           </div>
           <div class="content">
@@ -75,13 +74,30 @@
             <div v-else class="empty-cell">（无内容）</div>
           </div>
           <div class="actions">
-            <Button :disabled="!canUsePreview" @click="onUsePreview">使用此预览填充草稿</Button>
+            <!-- 口径与后端 nsc-core 的 word_count 一致（不含空白），
+                 这样填进草稿后的字数与落库字数不会出现两个数。
+                 它跟上面「附加指令」的字符计数口径不同：那个配合 maxlength 做输入
+                 限制反馈，故意含空白。 -->
+            <span v-if="currentPreview?.preview_content" class="preview-wordcount">
+              {{ countWords(currentPreview.preview_content) }} 字
+            </span>
+            <Button :disabled="!canUsePreview" @click="onUsePreview">填入草稿</Button>
             <Button v-if="currentPreview" :disabled="discarding" @click="onDiscard(currentPreview.id)">放弃</Button>
           </div>
         </template>
       </section>
     </div>
   </Dialog>
+
+    <!-- 填入草稿是**替换**语义：草稿已有内容时先确认，避免误覆盖手改过的文字。 -->
+    <ConfirmDialog
+      v-model:open="replaceDraftOpen"
+      title="填入草稿"
+      message="草稿区已有内容。填入草稿会用该预览替换现有草稿（不是追加）。确认替换？"
+      confirm-text="替换草稿"
+      kind="danger"
+      @confirm="doReplaceDraft"
+    />
 
     <ConfirmDialog
       v-model:open="commitConfirmOpen"
@@ -101,6 +117,7 @@ import Button from './ui/Button.vue';
 import ConfirmDialog from './ui/ConfirmDialog.vue';
 import { getChapter as ipcGetChapter, listChapterPreviews, listTransformationSourceChapters } from '../ipc/commands';
 import { confirm } from '@tauri-apps/plugin-dialog';
+import { countWords } from '../utils/format';
 import { useWorkflowsStore } from '../stores/workflows';
 import type { ChapterPreviewRow, PreviewStatus, SourceChapterRow } from '../ipc/types';
 
@@ -129,6 +146,7 @@ const selectedPreviewId = ref<number | null>(null);
 const generating = ref(false);
 const committing = ref(false);
 const commitConfirmOpen = ref(false);
+const replaceDraftOpen = ref(false);
 const discarding = ref(false);
 const lastError = ref<string | null>(null);
 const originalBody = ref('');
@@ -243,17 +261,17 @@ async function onGenerate(): Promise<void> {
 async function onUsePreview(): Promise<void> {
   const content = currentPreview.value?.preview_content;
   if (!content) return;
-  if (!draftContent.value.trim()) {
-    draftContent.value = content;
+  // 「填入草稿」是**替换**语义：草稿非空时先确认，避免悄悄覆盖用户手改过的文字。
+  if (draftContent.value.trim()) {
+    replaceDraftOpen.value = true;
     return;
   }
-  // 用插件的 confirm()，不要用 window.confirm —— 见 onDiscard 的说明。
-  const append = await confirm(
-    '草稿区已有内容。\n点击"追加"=追加到末尾（保留现有内容）\n点击"替换"=替换当前内容',
-    { title: '填充草稿', okLabel: '追加', cancelLabel: '替换' },
-  );
-  if (append) draftContent.value = draftContent.value + '\n\n' + content;
-  else draftContent.value = content;
+  draftContent.value = content;
+}
+
+function doReplaceDraft(): void {
+  const content = currentPreview.value?.preview_content;
+  if (content) draftContent.value = content;
 }
 
 function onCommit(): void {
@@ -298,14 +316,6 @@ async function onDiscard(previewId: number): Promise<void> {
     lastError.value = e instanceof Error ? e.message : String(e);
   } finally {
     discarding.value = false;
-  }
-}
-
-function statusGlyph(s: PreviewStatus): string {
-  switch (s) {
-    case 'generating': return '⋯';
-    case 'done': return '✓';
-    case 'failed': return '✗';
   }
 }
 
@@ -379,7 +389,6 @@ function previewTabTitle(p: ChapterPreviewRow, i: number): string {
   background: var(--color-cinnabar);
 }
 .tab.failed { color: var(--danger); border-color: var(--danger-border); }
-.tab .status { font-size: 12px; font-variant-numeric: tabular-nums; }
 .content {
   flex: 1;
   overflow: auto;
@@ -439,6 +448,14 @@ function previewTabTitle(p: ChapterPreviewRow, i: number): string {
   justify-content: flex-end;
   margin-top: 8px;
   flex-wrap: wrap;
+}
+/* 预览字数靠左，与右侧两个按钮分开 —— margin-right:auto 把它顶到最左。 */
+.preview-wordcount {
+  margin-right: auto;
+  align-self: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
 }
 .empty-cell {
   color: var(--text-muted);
