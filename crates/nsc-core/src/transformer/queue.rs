@@ -237,6 +237,265 @@ impl JobQueue {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::{ChatRequest, ChatResponse};
+    use crate::models::batch::{NewBatch, OnFailurePolicy};
+    use crate::models::prompt::PromptKind;
+    use crate::models::{
+        Chapter, NewChapter, NewDataAsset, NewModelConfig, NewTransformationChapter,
+        NewTransformationNovel, NewUpload, Prompt, TransformStatus,
+    };
+    use crate::recorder::NoopRecorder;
+
+    /// 立即返回固定正文的 provider(worker 会真跑完整条链路)。
+    struct InstantProvider;
+
+    #[async_trait::async_trait]
+    impl AiProvider for InstantProvider {
+        async fn chat(&self, _req: ChatRequest) -> Result<ChatResponse> {
+            Ok(ChatResponse {
+                content: "转换后正文".into(),
+                tokens_in: Some(3),
+                tokens_out: Some(4),
+            })
+        }
+    }
+
+    /// 每次都失败的 provider —— 用来驱动 failed 回调。
+    struct FailingProvider;
+
+    #[async_trait::async_trait]
+    impl AiProvider for FailingProvider {
+        async fn chat(&self, _req: ChatRequest) -> Result<ChatResponse> {
+            Err(crate::error::Error::Ai("模拟 provider 失败".into()))
+        }
+    }
+
+    fn seed(db: &Db) -> (i64, i64, i64, i64) {
+        let upload_id = db.uploads().insert(&NewUpload {
+            sha256: "q1".into(), filename: "f.txt".into(), byte_size: 1,
+            file_path: "/tmp/f.txt".into(), original_text: "原文".into(), word_count: 2,
+        }).unwrap();
+        let da_id = db.data_assets().insert(&NewDataAsset {
+            upload_id, title: "da".into(), source_filename: "f.txt".into(),
+            ..Default::default()
+        }).unwrap();
+        let tn_id = db.transformation_novels().insert(&NewTransformationNovel {
+            data_asset_id: da_id, title: "tn".into(), note: String::new(),
+        }).unwrap();
+        let prompt_id = db.prompts().insert(&Prompt {
+            id: 0, name: "p".into(), kind: PromptKind::Compress,
+            template: "{{chapter_content}}".into(), is_builtin: false, archived: 0,
+        }).unwrap();
+        let model_id = db.model_configs().insert(&NewModelConfig {
+            name: "m".into(), base_url: "http://localhost".into(), api_key: "k".into(),
+            model: "m".into(), max_tokens: None, max_context: None, temperature: None,
+            disable_thinking: false, concurrency: 1,
+        }).unwrap();
+        let batch_id = db.batches().insert(&NewBatch {
+            transformation_novel_id: tn_id, label: None,
+            on_failure_policy: OnFailurePolicy::PauseAndReview,
+            prompt_id, model_config_id: model_id, mode: "compress".into(),
+            ctx_prev_original: 0, ctx_prev_transformed: 0,
+            ctx_next_original: 0, ctx_next_transformed: 0,
+        }).unwrap();
+        let cid = db.chapters().insert(&NewChapter {
+            data_asset_id: da_id, idx: 1, title: "c1".into(),
+            body: "正文一".into(), word_count: 3, ..Default::default()
+        }).unwrap();
+        db.transformation_chapters().insert(&NewTransformationChapter {
+            transformation_novel_id: tn_id, chapter_id: cid,
+            mode: PromptKind::Compress, prompt_id, model_config_id: model_id,
+            ctx_prev_original: 0, ctx_prev_transformed: 0, ctx_next_original: 0,
+            batch_id: Some(batch_id), style_ref_chapter_id: None,
+        }).unwrap();
+        let tc_id = db.transformation_chapters().list_by_chapter(cid).unwrap()[0].id;
+        (tc_id, cid, prompt_id, model_id)
+    }
+
+    fn job(db: &Db, tc_id: i64, cid: i64, prompt_id: i64, model_id: i64) -> JobSpec {
+        // 分语句取数:repo guard 不可重入,别把两个 db.xxx() 嵌在同一个表达式里。
+        let chapter: Chapter = db.chapters().get(cid).unwrap().unwrap();
+        let batch_id = db.transformation_chapters()
+            .get(tc_id).unwrap().unwrap().batch_id.unwrap();
+        let tn_id = db.batches().get(batch_id).unwrap().unwrap().transformation_novel_id;
+        let prompt = db.prompts().get(prompt_id).unwrap().unwrap();
+        let model_config = db.model_configs().get(model_id).unwrap().unwrap();
+        JobSpec {
+            tc_id, tn_id, mode: PromptKind::Compress, chapter,
+            prompt, model_config,
+            ctx_prev_original: 0, ctx_prev_transformed: 0, ctx_next_original: 0,
+        }
+    }
+
+    /// 构建队列;`failing=true` 时 provider 永远失败。
+    fn queue(db: &Arc<Db>, failing: bool) -> JobQueue {
+        let dbw = db.clone();
+        JobQueue::new(
+            1,
+            move || Ok(dbw.clone()),
+            move |_cfg: &ModelConfig| -> Box<dyn AiProvider> {
+                if failing { Box::new(FailingProvider) } else { Box::new(InstantProvider) }
+            },
+            Arc::new(NoopRecorder),
+            Arc::new(HashSet::new()),
+        )
+    }
+
+    type Calls = Arc<std::sync::Mutex<Vec<(i64, bool, Option<String>, String)>>>;
+
+    /// 通过**公开接口**注册记录型 notifier —— 回调在 worker 线程 drain 时执行,
+    /// 所以断言前必须用 `wait_until` 等它落地(不是同步的)。
+    fn record(q: &JobQueue, calls: Calls) {
+        q.set_notifier(Arc::new(move |tid, success, error, content| {
+            calls.lock().unwrap().push((tid, success, error, content));
+        }));
+    }
+
+    /// 等谓词成真(worker 是线程池,完成时间不确定),超时即失败并回报实际内容。
+    fn wait_until<F: Fn() -> bool>(f: F, what: &str) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            if f() { return true; }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("等待超时: {what}");
+    }
+
+    /// **notifier 契约**:enqueue 立即回调一次 `(tid, false, None, "")` ——
+    /// 这是"已入队"信号(UI 据此把行标成 pending),不是失败。
+    /// 注意 worker 还没跑,所以此刻不该出现 success 回调。
+    #[test]
+    fn enqueue_fires_queued_notification_immediately() {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let (tc_id, cid, pid, mid) = seed(&db);
+        let q = queue(&db, false);
+        let calls: Calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        record(&q, calls.clone());
+
+        let returned = q.enqueue(job(&db, tc_id, cid, pid, mid));
+        assert_eq!(returned, tc_id, "enqueue 应回传 tc_id 供 caller 记录");
+
+        // 入队通知由 worker 在 drain 时执行 —— 异步,需等
+        let c = calls.clone();
+        wait_until(|| !c.lock().unwrap().is_empty(), "入队通知");
+        let got = calls.lock().unwrap().clone();
+        let queued = got.first().expect("应收到入队通知");
+        assert_eq!(queued.0, tc_id);
+        assert!(!queued.1, "入队通知的 success 应为 false");
+        assert!(queued.2.is_none(), "入队通知不该带 error(它不是失败)");
+        assert_eq!(queued.3, "", "入队通知不该带正文");
+    }
+
+    /// 成功路径:job 跑完后回调一次 `(tid, true, None, <正文>)`。
+    #[test]
+    fn successful_job_fires_done_notification_with_content() {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let (tc_id, cid, pid, mid) = seed(&db);
+        let q = queue(&db, false);
+        let calls: Calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        record(&q, calls.clone());
+        q.enqueue(job(&db, tc_id, cid, pid, mid));
+
+        let c = calls.clone();
+        wait_until(|| c.lock().unwrap().iter().any(|r| r.1), "成功回调");
+
+        let got = calls.lock().unwrap().clone();
+        let done = got.iter().find(|r| r.1).expect("应有 success 回调");
+        assert_eq!(done.0, tc_id);
+        assert_eq!(done.3, "转换后正文", "成功回调应带上模型产出的正文");
+        assert!(done.2.is_none());
+    }
+
+    /// 失败路径:回调 `(tid, false, Some(err), "")` —— 与"入队通知"的差别在 error 非空。
+    #[test]
+    fn failed_job_fires_failure_notification_with_error() {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let (tc_id, cid, pid, mid) = seed(&db);
+        let q = queue(&db, true);
+        let calls: Calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        record(&q, calls.clone());
+        q.enqueue(job(&db, tc_id, cid, pid, mid));
+
+        let c = calls.clone();
+        wait_until(
+            || c.lock().unwrap().iter().any(|r| !r.1 && r.2.is_some()),
+            "失败回调",
+        );
+
+        let got = calls.lock().unwrap().clone();
+        let fail = got.iter().find(|r| !r.1 && r.2.is_some()).expect("应有失败回调");
+        assert_eq!(fail.0, tc_id);
+        assert!(fail.2.as_deref().unwrap().contains("模拟 provider 失败"),
+            "失败回调应带上真实错误: {fail:?}");
+        assert_eq!(fail.3, "");
+
+        // 该章应被标 failed 且 worker 仍活着(不是 panic 路径)
+        let tc = db.transformation_chapters().get(tc_id).unwrap().unwrap();
+        assert_eq!(tc.status, TransformStatus::Failed);
+    }
+
+    /// 没注册 notifier 时 enqueue 不应 panic(回调是可选的)。
+    #[test]
+    fn enqueue_without_notifier_is_safe() {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let (tc_id, cid, pid, mid) = seed(&db);
+        let q = queue(&db, false);
+        assert_eq!(q.enqueue(job(&db, tc_id, cid, pid, mid)), tc_id);
+    }
+
+    /// 重复注册 notifier:以后者为准(旧的不再被调用)。
+    #[test]
+    fn set_notifier_replaces_previous() {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let (tc_id, cid, pid, mid) = seed(&db);
+        let q = queue(&db, false);
+        let first: Calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let second: Calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        record(&q, first.clone());
+        record(&q, second.clone());
+
+        q.enqueue(job(&db, tc_id, cid, pid, mid));
+
+        let s = second.clone();
+        wait_until(|| !s.lock().unwrap().is_empty(), "新 notifier 的回调");
+        assert!(first.lock().unwrap().is_empty(), "被替换的 notifier 不该再收到回调");
+    }
+
+    /// 空队列的 snapshot 四组皆空(不 panic、不阻塞)。
+    #[test]
+    fn snapshot_of_empty_queue_is_empty() {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let q = queue(&db, false);
+        let s = q.snapshot();
+        assert!(s.pending.is_empty() && s.running.is_empty()
+            && s.done.is_empty() && s.failed.is_empty());
+    }
+
+    /// snapshot 记录 job 的终结状态:成功进 done、失败进 failed,且都带 tokens 字段。
+    #[test]
+    fn snapshot_tracks_terminal_states() {
+        let db = Arc::new(Db::open_in_memory().unwrap());
+        let (tc_id, cid, pid, mid) = seed(&db);
+        let q = queue(&db, false);
+        q.enqueue(job(&db, tc_id, cid, pid, mid));
+
+        let shared = q.shared.clone();
+        wait_until(
+            || shared.inner.try_lock().map(|m| !m.done.is_empty()).unwrap_or(false),
+            "done 快照",
+        );
+        let s = q.snapshot();
+        let d = s.done.iter().find(|j| j.tc_id == tc_id).expect("done 应有该 job");
+        assert_eq!(d.status, JobStatus::Done);
+        assert_eq!(d.tokens_in, Some(3));
+        assert_eq!(d.tokens_out, Some(4));
+        assert_eq!(d.chapter_idx, 1);
+    }
+}
+
 pub struct Prep {
     pub transformation_novel: TransformationNovel,
     pub chapter: crate::models::Chapter,
