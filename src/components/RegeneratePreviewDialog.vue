@@ -100,6 +100,7 @@ import Dialog from './ui/Dialog.vue';
 import Button from './ui/Button.vue';
 import ConfirmDialog from './ui/ConfirmDialog.vue';
 import { getChapter as ipcGetChapter, listChapterPreviews, listTransformationSourceChapters } from '../ipc/commands';
+import { confirm } from '@tauri-apps/plugin-dialog';
 import { useWorkflowsStore } from '../stores/workflows';
 import type { ChapterPreviewRow, PreviewStatus, SourceChapterRow } from '../ipc/types';
 
@@ -239,15 +240,17 @@ async function onGenerate(): Promise<void> {
   }
 }
 
-function onUsePreview(): void {
+async function onUsePreview(): Promise<void> {
   const content = currentPreview.value?.preview_content;
   if (!content) return;
   if (!draftContent.value.trim()) {
     draftContent.value = content;
     return;
   }
-  const append = window.confirm(
-    '草稿区已有内容。\n点击"确定"=追加到末尾（保留现有内容）\n点击"取消"=替换当前内容',
+  // 用插件的 confirm()，不要用 window.confirm —— 见 onDiscard 的说明。
+  const append = await confirm(
+    '草稿区已有内容。\n点击"追加"=追加到末尾（保留现有内容）\n点击"替换"=替换当前内容',
+    { title: '填充草稿', okLabel: '追加', cancelLabel: '替换' },
   );
   if (append) draftContent.value = draftContent.value + '\n\n' + content;
   else draftContent.value = content;
@@ -279,7 +282,12 @@ async function doCommit(): Promise<void> {
 
 async function onDiscard(previewId: number): Promise<void> {
   if (discarding.value) return;
-  if (!window.confirm('放弃这个预览？')) return;
+  // 必须用插件的 confirm()：tauri-plugin-dialog 会把 window.confirm 改写成
+  // `plugin:dialog|confirm`，但该插件只注册了 message/open/save，ACL 里也没有任何
+  // 权限指向 `confirm` —— 于是 window.confirm 必然抛
+  // "dialog.confirm not allowed. Command not found"。插件自己的 confirm() 走
+  // `plugin:dialog|message`，是受支持的路径。
+  if (!(await confirm('放弃这个预览？', { title: '放弃预览', kind: 'warning' }))) return;
   discarding.value = true;
   try {
     await store.discardPreview(previewId);

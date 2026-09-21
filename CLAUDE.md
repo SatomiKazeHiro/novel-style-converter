@@ -157,5 +157,14 @@ cargo test -p nsc-core --test ai_openai   # 单个集成文件
 - **`vite.config.ts`** 的 `server.watch.ignored` 排除 `**/target/**`、`**/crates/**`、
   `**/src-tauri/**`、`**/migrations/**`、`**/dist/**` —— 去掉后 cargo 的 rustdoc HTML
   会触发依赖扫描爆炸。端口写死 43801 + `strictPort`。
+- **不要用 `window.confirm` / `window.alert`** —— `tauri-plugin-dialog` 的注入脚本
+  (`init-iife.js`) 会把它们改写成 `plugin:dialog|confirm` / `|message`，但该插件**只注册了
+  `message` / `open` / `save` 三个命令**，且 ACL 里没有任何权限指向 `confirm`（`allow-confirm`
+  在 2.7.2 里是 `allow-message` 的别名）。于是 `window.confirm` 必然抛
+  `dialog.confirm not allowed. Command not found`。用插件自己的
+  `import { confirm } from '@tauri-apps/plugin-dialog'`（走被授权的 `message`），
+  或应用内的 `<ConfirmDialog>`。
+  测这类逻辑时要 `vi.mock('@tauri-apps/plugin-dialog')`，**不能** `vi.spyOn(window, 'confirm')`
+  —— 那等于测了个假实现（vitest 里没有插件注入，spy 永远"成功"）。
 - **API key 明文存在 `%APPDATA%/novel-style-converter/data.db`**(单机用途)。`.env` 已
   gitignore,**绝不提交真实 key**;归档 model 时 `api_key` 会被抹成空串。

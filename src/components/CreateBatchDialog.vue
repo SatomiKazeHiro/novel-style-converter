@@ -170,6 +170,7 @@ import Button from './ui/Button.vue';
 import IconPauseCircle from '~icons/lucide/pause-circle';
 import IconSkipForward from '~icons/lucide/skip-forward';
 import { listModels, listPrompts, previewFirstChapter, getChapter } from '../ipc/commands';
+import { confirm } from '@tauri-apps/plugin-dialog';
 import type { ModelConfig, Prompt, CreateWorkflowInput, FirstChapterSeedSource } from '../ipc/types';
 import { formatPromptKind } from '../utils/prompt-locale';
 
@@ -325,7 +326,7 @@ async function onGeneratePreview() {
 
 /// "↑ 从预览复制"按钮。previewOutput 空时按钮禁用;
 /// seedContent 已非空时弹 confirm 决定追加或替换。
-function onCopyFromPreview() {
+async function onCopyFromPreview() {
   const out = previewLatest.value;
   if (!out || !out.content.trim()) return;
   if (!seedContent.value.trim()) {
@@ -333,8 +334,10 @@ function onCopyFromPreview() {
     seedSource.value = { kind: 'llm', tokens_in: out.tokens_in, tokens_out: out.tokens_out };
     return;
   }
-  const append = window.confirm(
-    '转换结果区已有内容。\n确定=追加到末尾（保留现有内容）\n取消=替换当前内容',
+  // 用插件的 confirm()，不要用 window.confirm —— 理由见 RegeneratePreviewDialog.onDiscard。
+  const append = await confirm(
+    '转换结果区已有内容。\n点击"追加"=追加到末尾（保留现有内容）\n点击"替换"=替换当前内容',
+    { title: '填充转换结果区', okLabel: '追加', cancelLabel: '替换' },
   );
   if (append) {
     seedContent.value = seedContent.value + '\n\n' + out.content;
@@ -345,9 +348,9 @@ function onCopyFromPreview() {
   }
 }
 
-function onClearSeed() {
+async function onClearSeed() {
   if (!seedContent.value.trim()) return;
-  if (!window.confirm('清空转换结果区？')) return;
+  if (!(await confirm('清空转换结果区？', { title: '清空', kind: 'warning' }))) return;
   seedContent.value = '';
   seedSource.value = null;
 }

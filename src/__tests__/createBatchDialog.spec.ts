@@ -21,7 +21,16 @@ vi.mock('../ipc/commands', () => ({
   })),
 }));
 
+// 对话框现在走插件的 `confirm()`（它 invoke `plugin:dialog|message`），
+// 不再用 `window.confirm` —— 后者被 tauri-plugin-dialog 的注入脚本改写成
+// `plugin:dialog|confirm`，而该命令在 ACL 与插件 handler 里都不存在，**必然抛错**。
+// 所以这里必须 mock 插件模块，而不是 spy `window.confirm`（那样等于测了个假实现）。
+vi.mock('@tauri-apps/plugin-dialog', () => ({
+  confirm: vi.fn(async () => true),
+}));
+
 import CreateBatchDialog from '../components/CreateBatchDialog.vue';
+import { confirm } from '@tauri-apps/plugin-dialog';
 
 beforeEach(() => {
   setActivePinia(createPinia());
@@ -172,7 +181,7 @@ describe('CreateBatchDialog: 首章种子可选化 (spec 2026-09-01)', () => {
   });
 
   it('"清空"按钮： seedContent=""、seedSource=null', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.mocked(confirm).mockResolvedValueOnce(true);
     const dialog = mountDialog();
     await fillRequired(dialog);
     await dialog.find('textarea.seed-output').setValue('to clear');
@@ -191,7 +200,7 @@ describe('CreateBatchDialog: 首章种子可选化 (spec 2026-09-01)', () => {
 
   // 覆盖 onCopyFromPreview 的 confirm 分支（I-1）
   it('"↑ 复制"在 seedContent 非空时弹 confirm,确定=追加', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
+    vi.mocked(confirm).mockResolvedValueOnce(true);
     const dialog = mountDialog();
     await fillRequired(dialog);
     await dialog.find('textarea.seed-output').setValue('existing content');
@@ -204,7 +213,7 @@ describe('CreateBatchDialog: 首章种子可选化 (spec 2026-09-01)', () => {
   });
 
   it('"↑ 复制"在 seedContent 非空时弹 confirm,取消=替换', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValueOnce(false);
+    vi.mocked(confirm).mockResolvedValueOnce(false);
     const dialog = mountDialog();
     await fillRequired(dialog);
     await dialog.find('textarea.seed-output').setValue('existing content');
