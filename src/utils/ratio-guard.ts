@@ -47,3 +47,36 @@ export function guardNote(mode: TransformMode, source: number, result: number | 
   }
   return null;
 }
+
+/// 压缩过度提示：压缩得**超出期望范围**（字变率 < −35%，即输出不足原文 65%）。
+///
+/// 实测触发例：原文 2397 字 → 结果 1114 字 = −54%，用户认为"压过头了"。
+///
+/// 与护栏（`guardNote`）的分工 —— 两档严重程度不同，都会显示，记号也不同：
+/// - 本阈值 −35%（输出 65%）：**偏重**，还在护栏内，但已经压得比期望多，值得重跑或调 prompt。
+/// - 护栏下限 15%（字变率 −85%）：**疑似丢情节**，是错误级别。
+/// - 护栏上限 90%（字变率 −10%）：**几乎没压**，任务未生效。
+///
+/// 注意这里是"压得更狠"方向（更负），不是"压得不足"。
+export const COMPRESS_OVER_PCT = 65.0;
+
+/// 字变率形式的阈值（−35），便于 UI 侧直接比较。
+export const COMPRESS_OVER_DELTA_PCT = COMPRESS_OVER_PCT - 100;
+
+export function overCompressNote(source: number, result: number | null): string | null {
+  const delta = deltaPercentOf(source, result);
+  if (delta === null) return null;
+  // 只覆盖"偏重但未越护栏"这一段：比 −10% 还轻的是"几乎没压"（由 guardNote 上限负责），
+  // 比 −85% 还狠的由 guardNote 下限负责报"疑似丢情节"。
+  if (delta > COMPRESS_OVER_DELTA_PCT) return null;
+  if (delta < COMPRESS_BAND.floorPct - 100) return null;
+  const pct = ratioPercent(source, result)!;
+  const shown = (Math.round(pct * 10) / 10).toFixed(1);
+  return `压缩后为原文 ${shown}%(字变率 ${Math.round(delta)}%),压得比期望重 —— 可考虑重跑或调整 prompt`;
+}
+
+/// 本地实现（与 utils/format 的 deltaPercent 同口径），避免 utils 之间互相引用。
+function deltaPercentOf(source: number, result: number | null): number | null {
+  if (result === null || source <= 0) return null;
+  return ((result - source) / source) * 100;
+}

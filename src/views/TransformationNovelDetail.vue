@@ -29,8 +29,9 @@ import Button from '../components/ui/Button.vue';
 import PageHeader from '../components/ui/PageHeader.vue';
 import IconArrowLeft from '~icons/lucide/arrow-left';
 import IconAlertTriangle from '~icons/lucide/alert-triangle';
+import IconAlertCircle from '~icons/lucide/alert-circle';
 import { countWords, deltaPercent, formatDeltaPercent, formatTime, formatWordCount } from '../utils/format';
-import { guardNote } from '../utils/ratio-guard';
+import { guardNote, overCompressNote } from '../utils/ratio-guard';
 import { confirmDialog } from '../composables/useConfirm';
 import CreateBatchDialog from '../components/CreateBatchDialog.vue';
 import PromoteWorkflowDialog from '../components/PromoteWorkflowDialog.vue';
@@ -145,6 +146,12 @@ function rowGuardNote(row: WorkflowChapterRow): string | null {
   const mode = selectedWorkflow.value?.mode;
   if (mode !== 'compress' && mode !== 'style') return null;
   return guardNote(mode, row.source_word_count, row.result_word_count);
+}
+
+/// 压缩过度（字变率 < −35% 且未越护栏）：只在压缩模式提示，文风模式无此概念。
+function rowOverCompressNote(row: WorkflowChapterRow): string | null {
+  if (selectedWorkflow.value?.mode !== 'compress') return null;
+  return overCompressNote(row.source_word_count, row.result_word_count);
 }
 
 // 章节来源 tab
@@ -1128,6 +1135,15 @@ watch(() => sources.value, (list) => {
               : (rowDelta(row)! > 0 ? 'up' : 'down')"
           >{{ formatDeltaPercent(rowDelta(row)!) }}</span>
           <span v-else class="num muted">—</span>
+          <!-- 压缩过度（字变率 < −35%）：压得比期望重，但还没到护栏（−85% 才是疑似丢情节）。
+               两档都显示、记号不同：这里 muted 灰 ⊙「偏重可重跑」，护栏那档 warn 琥珀 ⚠「疑似丢情节」。 -->
+          <span
+            v-if="rowOverCompressNote(row)"
+            class="over-mark"
+            :title="rowOverCompressNote(row) ?? ''"
+          >
+            <IconAlertCircle class="guard-icon" />
+          </span>
           <!-- 越界标记(与后端 ratio_guard 同阈值):⚠ 挂在字变率右侧,
                悬停给出具体比例与越界方向。变红/变绿只表达"变长/变短"这一维,
                所以"是否越界"必须另给一个记号,否则会被误读成同一件事。 -->
@@ -1487,7 +1503,7 @@ watch(() => sources.value, (list) => {
 .dot-pending { background: var(--text-muted); opacity: 0.55; }
 /* 字数与字变率列 —— 等宽数字右对齐，方便纵向扫读比较。 */
 .num-head { display: inline-block; text-align: right; }
-.num { display: block; text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 12px; }
+.num { display: inline-block; text-align: right; font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 12px; }
 .num.muted { color: var(--text-muted); }
 .delta { font-weight: 600; }
 /* 变长=红、变短=绿。压缩模式下"压得过分"是大负值(绿)，文风模式跑飞是大正值(红)，
@@ -1496,8 +1512,11 @@ watch(() => sources.value, (list) => {
 .delta.down { color: var(--success); }
 .delta.flat { color: var(--text-muted); font-weight: 400; }
 /* 越界标记 —— 用 warn 色而不是上/下箭头，与"变长/变短"区分开。 */
-.guard-mark { display: inline-flex; align-items: center; margin-left: 4px; color: var(--warn); cursor: help; }
+.guard-mark { vertical-align: middle; margin-left: 4px; color: var(--warn); cursor: help; }
 .guard-icon { width: 13px; height: 13px; flex-shrink: 0; }
+/* 压缩过度（−35%~−85%）与护栏越界（<15%）同用警示色 —— 都是"这章压缩有问题"这类信号，
+   严重程度差别由图标(⊙/⚠)与悬停文案表达，不再靠颜色深浅区分（灰色太弱，容易看不见）。 */
+.over-mark { vertical-align: middle; margin-left: 4px; color: var(--warn); cursor: help; }
 /* 失败/跳过行的状态列前 ⚠️ 标识 —— 视觉上快速定位,完整错误去 Chapter Detail 看。 */
 .status-warn-mark { display: inline-flex; align-items: center; color: var(--danger); margin-right: 4px; }
 .warn-icon { width: 14px; height: 14px; flex-shrink: 0; }

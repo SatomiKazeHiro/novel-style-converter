@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { bandOf, guardNote, ratioPercent, COMPRESS_BAND, STYLE_BAND } from '../utils/ratio-guard';
+import {
+  bandOf,
+  guardNote,
+  overCompressNote,
+  ratioPercent,
+  COMPRESS_BAND,
+  COMPRESS_OVER_DELTA_PCT,
+  STYLE_BAND,
+} from '../utils/ratio-guard';
 
 /// 前端护栏镜像 —— 阈值必须与 crates/nsc-core/src/transformer/ratio_guard.rs 一致。
 /// 这里重点测**边界闭区间**：后端 `band_edges_are_inclusive` 断言"正好 15% / 90% 算正常，
@@ -67,5 +75,44 @@ describe('bandOf', () => {
     expect(bandOf('compress')).toEqual(COMPRESS_BAND);
     expect(bandOf('style')).toEqual(STYLE_BAND);
     expect(bandOf('compress').floorPct).toBeLessThan(bandOf('style').floorPct);
+  });
+});
+
+/// 压缩过度提示（字变率 < −35%，即输出不足原文 65%）。
+/// 与护栏是**两档**：这档"偏重、可重跑"，护栏那档"疑似丢情节"。
+describe('overCompressNote', () => {
+  it('用户实测例子:2397 → 1114（−54%）要标出来', () => {
+    const note = overCompressNote(2397, 1114);
+    expect(note).not.toBeNull();
+    expect(note).toContain('46.5%'); // 1114/2397 ≈ 46.5% 原文
+    expect(note).toContain('-54%');
+  });
+
+  it('阈值边界:正好 −35% 也标（含边界），比 −35% 轻才不标', () => {
+    expect(overCompressNote(1000, 650)).not.toBeNull();  // −35.0% 含边界
+    expect(overCompressNote(1000, 651)).toBeNull();      // −34.9% 不标
+  });
+
+  it('比期望轻的（−10%/−20%）不标 —— 那是"几乎没压"由护栏上限负责', () => {
+    expect(overCompressNote(1000, 900)).toBeNull(); // −10%
+    expect(overCompressNote(1000, 800)).toBeNull(); // −20%
+    expect(overCompressNote(1000, 700)).toBeNull(); // −30%
+  });
+
+  it('越到护栏那档（<15%）让给 guardNote，本提示不重复报', () => {
+    // 输出 10% 原文（字变率 −90%）已低于护栏 15% → guardNote 负责
+    expect(overCompressNote(1000, 100)).toBeNull();
+    expect(guardNote('compress', 1000, 100)).not.toBeNull();
+    // 而 −54% 这段在护栏内（46.5% 介于 15%~90%），只由本提示报
+    expect(guardNote('compress', 2397, 1114)).toBeNull();
+  });
+
+  it('结果为空 / 原文 0 字 → 不标', () => {
+    expect(overCompressNote(1000, null)).toBeNull();
+    expect(overCompressNote(0, 100)).toBeNull();
+  });
+
+  it('阈值常量与字变率的换算关系', () => {
+    expect(COMPRESS_OVER_DELTA_PCT).toBe(-35);
   });
 });
