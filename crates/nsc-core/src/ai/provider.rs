@@ -26,6 +26,43 @@ pub struct ChatRequest {
     pub thinking: Option<String>,
 }
 
+/// 把 provider 的非 2xx 响应体转成**可操作**的错误信息。
+///
+/// ## 为什么需要
+/// 原先直接把原始响应体塞进错误串,用户在 UI 上看到的是
+/// `unprocessable_entity_error (1026)` + 一段 JSON —— 既不知道是**哪一类**失败,
+/// 也不知道该怎么办(实测:某章被 MiniMax 输入审核拦下,连试 5 次全失败,
+/// 用户只能看到原始 JSON)。
+///
+/// ## 覆盖范围(有意收窄)
+/// 只识别一种**明确且需要不同处置**的情形:输入内容被 provider 审核拦截。
+/// 其余错误(401 / 429 / 5xx / 网络)保持原样透传 —— 不去解析各家厂商的全部
+/// 错误码文案,避免把自己绑死在某个 provider 的措辞上(换一家就失效)。
+///
+/// 判据取"状态码 + 关键词"而不是只匹配文案:`422` 是输入不可处理的通用码,
+/// 关键词覆盖 MiniMax(`new_sensitive`)、OpenAI(`content_policy`)、
+/// Anthropic(`invalid_request` 侧的内容策略)、以及通用 moderation 措辞。
+pub fn describe_provider_error(status: u16, body: &str) -> String {
+    let lower = body.to_ascii_lowercase();
+    let looks_like_moderation = lower.contains("new_sensitive")
+        || lower.contains("sensitive")
+        || lower.contains("content_policy")
+        || lower.contains("content policy")
+        || lower.contains("moderation")
+        || lower.contains("safety");
+    if status == 422 && looks_like_moderation {
+        return format!(
+            "内容被 provider 审核拦截(输入侧)。这是 provider 服务端的内容审核,不是请求格式或上下文长度问题;\
+             同一段正文重试通常仍会被拦下(deterministic),建议:\
+             ① 给这一章换用其它模型 / provider;\
+             ② 或调小该章的上下文邻章数后再试;\
+             ③ 若确认正文无敏感内容,可拿原始响应里的 request_id 向 provider 反馈误判。\
+             原始响应: {body}"
+        );
+    }
+    format!("http {status}: {body}")
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatResponse {
     pub content: String,

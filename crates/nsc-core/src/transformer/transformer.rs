@@ -34,6 +34,7 @@ pub struct TransformationNovelContext {
     pub next_original: Vec<(String, String)>,
 }
 
+#[derive(Debug)]
 pub struct TransformOutcome {
     pub result_content: String,
     /// `None` = provider 未返回 usage(见 `ai::ChatResponse`)。不是失败。
@@ -164,7 +165,10 @@ impl DefaultTransformer {
             }
             AiCallBusiness::TestModel => (None, None),
         };
-        let (status, response_full, actual_in, actual_out, error_msg, outcome) = match &ai_result {
+        // 只解构"记账/落库需要的字段";`outcome` 由 `ai_result` 在 record 之后
+        // 直接返回(见方法末尾)—— 这样成功路径不必 clone 正文,失败路径也不必
+        // 把原错误 stringify 后重新包一层。
+        let (status, response_full, actual_in, actual_out, error_msg) = match &ai_result {
             Ok(r) => (
                 AiCallStatus::Success,
                 r.content.clone(),
@@ -173,11 +177,6 @@ impl DefaultTransformer {
                 r.tokens_in,
                 r.tokens_out,
                 None,
-                Ok(TransformOutcome {
-                    result_content: r.content.clone(),
-                    tokens_in: r.tokens_in,
-                    tokens_out: r.tokens_out,
-                }),
             ),
             Err(e) => (
                 AiCallStatus::Failed,
@@ -185,7 +184,6 @@ impl DefaultTransformer {
                 None,
                 None,
                 Some(e.to_string()),
-                Err(Error::Ai(e.to_string())),
             ),
         };
         // 产出比例量测 —— 提示词承诺的比例(压缩 30–50% / 文风 ±15%)此前无任何实测。
@@ -219,7 +217,16 @@ impl DefaultTransformer {
             ratio_note,
         });
 
-        outcome
+        // 匹配臂直接返回最终 Result,不再经过 `outcome` 中间变量:
+        // Ok 臂产出 TransformOutcome,Err 臂透传原错误(见上方注释:不要重包)。
+        match ai_result {
+            Ok(r) => Ok(TransformOutcome {
+                result_content: r.content,
+                tokens_in: r.tokens_in,
+                tokens_out: r.tokens_out,
+            }),
+            Err(e) => Err(e),
+        }
     }
 
     /// Wrapper:ç­ä»·äº `transform_with_business(req, TransformChapter)` ââ `queue.rs` éè¿ `Box<dyn Transformer>` è°ç¨æ¶ä½¿ç¨ã
@@ -232,5 +239,103 @@ impl DefaultTransformer {
 impl Transformer for DefaultTransformer {
     async fn transform(&self, req: TransformRequest) -> Result<TransformOutcome> {
         self.transform_with_business(req, AiCallBusiness::TransformChapter).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::ChatResponse;
+    use crate::models::Prompt;
+    use crate::recorder::NoopRecorder;
+    use std::sync::Arc;
+
+    /// 永远失败的 provider,返回 `Error::Ai`(与 OpenAiProvider 的非 2xx 路径一致)。
+    struct FailingProvider;
+
+    #[async_trait]
+    impl AiProvider for FailingProvider {
+        async fn chat(&self, _req: ChatRequest) -> Result<ChatResponse> {
+            Err(Error::Ai("http 422: input new_sensitive".into()))
+        }
+    }
+
+    fn fixture_req() -> TransformRequest {
+        let prompt = Prompt {
+            id: 1,
+            name: "t".into(),
+            kind: crate::models::PromptKind::Compress,
+            template: "{{chapter_content}}".into(),
+            is_builtin: false,
+            archived: 0,
+        };
+        TransformRequest {
+            transformation_id: 1,
+            chapter: crate::models::Chapter {
+                id: 1,
+                data_asset_id: 1,
+                idx: 1,
+                title: "第一章".into(),
+                body: "正文".into(),
+                word_count: 2,
+                source_kind: "original".into(),
+                source_chapter_id: None,
+                edited_at: None,
+                title_line: None,
+            },
+            chapter_content: "正文".into(),
+            novel_context: TransformationNovelContext {
+                transformation_novel: crate::models::TransformationNovel {
+                    id: 1,
+                    data_asset_id: 1,
+                    title: "书".into(),
+                    created_at: chrono::Utc::now(),
+                    note: String::new(),
+                },
+                prev_original: Vec::new(),
+                prev_transformed: Vec::new(),
+                next_original: Vec::new(),
+            },
+            prompt,
+            model_config: ModelConfig {
+                id: 1,
+                name: "m".into(),
+                base_url: "http://localhost".into(),
+                api_key: "k".into(),
+                model: "m".into(),
+                max_tokens: None,
+                max_context: None,
+                temperature: None,
+                disable_thinking: false,
+                concurrency: 1,
+                archived: 0,
+            },
+            custom_input: None,
+            preview_id: None,
+        }
+    }
+
+    /// 回归:provider 失败时返回的错误必须**原样透传**,不能被
+    /// `Error::Ai(e.to_string())` 再包一层 —— 那会产出
+    /// "ai provider: ai provider: ..." 双层前缀(线上 ai_call_logs.error 里出现过)。
+    #[tokio::test]
+    async fn provider_error_is_passed_through_without_double_prefix() {
+        let t = DefaultTransformer::new(
+            Arc::new(FailingProvider),
+            Arc::new(NoopRecorder),
+            Arc::new(Default::default()),
+        );
+        let err = t
+            .transform_with_business(fixture_req(), AiCallBusiness::TransformChapter)
+            .await
+            .expect_err("provider 失败应向上抛错");
+
+        let msg = err.to_string();
+        assert_eq!(
+            msg.matches("ai provider:").count(),
+            1,
+            "前缀应只出现一次(双层前缀是回归): {msg}"
+        );
+        assert!(msg.contains("422"), "原始信息不应丢失: {msg}");
     }
 }

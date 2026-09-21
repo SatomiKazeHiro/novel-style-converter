@@ -91,7 +91,12 @@ impl AiProvider for OpenAiProvider {
         let status = resp.status();
         if !status.is_success() {
             let text = resp.text().await?;
-            return Err(Error::Ai(format!("http {status}: {text}")));
+            // 走 provider 层的错误描述 —— 把"内容被审核拦截"这类需要不同处置的
+            // 情形翻译成可操作提示(见 ai::provider::describe_provider_error)。
+            return Err(Error::Ai(crate::ai::provider::describe_provider_error(
+                status.as_u16(),
+                &text,
+            )));
         }
         let wire: WireResponse = resp.json().await?;
         let content = wire.choices.into_iter().next()

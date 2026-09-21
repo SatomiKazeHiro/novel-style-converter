@@ -128,3 +128,107 @@ async fn non_2xx_is_still_an_error() {
         "错误应带状态码,实际: {err}"
     );
 }
+
+/// 输入被 provider 内容审核拦截(实测现象:MiniMax 对某一章返回 422 new_sensitive,
+/// 同一段正文连试 5 次全失败)→ 错误串必须说明"这是审核拦截"并给出可操作建议,
+/// 而不是把原始 JSON 直接抛给用户。
+#[tokio::test]
+async fn moderation_block_explains_cause_and_next_steps() {
+    let server = MockServer::start().await;
+    // 与线上实际响应体一致(取自 ai_call_logs.error)
+    let body = r#"{"type":"error","error":{"type":"unprocessable_entity_error","message":"input new_sensitive (1026)","http_code":"422"},"request_id":"06ffc0ff7cf3633450746124132ad06a"}"#;
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(422).set_body_string(body))
+        .mount(&server)
+        .await;
+
+    let err = provider_for(&server)
+        .chat(req())
+        .await
+        .expect_err("422 应失败");
+    let msg = err.to_string();
+
+    assert!(
+        msg.contains("内容被 provider 审核拦截"),
+        "应点明是审核拦截: {msg}"
+    );
+    assert!(msg.contains("换用其它模型"), "应给出可操作建议: {msg}");
+    assert!(msg.contains("重试通常仍会被拦下"), "应说明重试无效: {msg}");
+    assert!(
+        msg.contains("request_id"),
+        "应提示可凭 request_id 反馈: {msg}"
+    );
+    assert!(msg.contains("06ffc0ff"), "应保留原始响应供排查: {msg}");
+}
+
+/// 422 但不是审核问题(其它输入不可处理错误)→ 保持原样,不误报成审核拦截。
+#[tokio::test]
+async fn non_moderation_422_is_passed_through() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(422)
+                .set_body_string(r#"{"error":{"message":"invalid temperature"}}"#),
+        )
+        .mount(&server)
+        .await;
+
+    let err = provider_for(&server)
+        .chat(req())
+        .await
+        .expect_err("422 应失败");
+    let msg = err.to_string();
+    assert!(!msg.contains("审核拦截"), "非审核类 422 不应被误报: {msg}");
+    assert!(
+        msg.contains("invalid temperature"),
+        "应原样保留响应体: {msg}"
+    );
+}
+
+/// 审核关键词出现在非 422 状态码上时不套用该提示(避免扩大解释)。
+#[tokio::test]
+async fn moderation_keyword_on_non_422_is_not_special_cased() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .respond_with(
+            ResponseTemplate::new(500).set_body_string("internal: sensitive check crashed"),
+        )
+        .mount(&server)
+        .await;
+
+    let err = provider_for(&server)
+        .chat(req())
+        .await
+        .expect_err("500 应失败");
+    let msg = err.to_string();
+    assert!(!msg.contains("审核拦截"), "仅 422 才套用审核提示: {msg}");
+    assert!(msg.contains("500"), "应保留状态码: {msg}");
+}
+
+/// 错误描述函数的厂商覆盖与边界:各厂商措辞都要能识别,普通错误不误伤。
+#[test]
+fn describe_provider_error_covers_vendors() {
+    use nsc_core::ai::describe_provider_error;
+
+    for body in [
+        r#"{"error":{"message":"input new_sensitive (1026)"}}"#,
+        r#"{"error":{"code":"content_policy_violation"}}"#,
+        r#"{"error":{"message":"blocked by moderation"}}"#,
+        r#"{"error":{"message":"flagged by safety system"}}"#,
+    ] {
+        let msg = describe_provider_error(422, body);
+        assert!(
+            msg.contains("审核拦截"),
+            "应识别为审核拦截: {body} -> {msg}"
+        );
+    }
+    // 普通错误原样透传
+    assert_eq!(
+        describe_provider_error(401, "unauthorized"),
+        "http 401: unauthorized"
+    );
+    assert_eq!(
+        describe_provider_error(429, "rate limited"),
+        "http 429: rate limited"
+    );
+}
