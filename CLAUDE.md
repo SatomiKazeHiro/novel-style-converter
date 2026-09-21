@@ -124,9 +124,8 @@ cargo test -p nsc-core --test queue_worker_panic
 cargo test -p nsc-core --test ai_openai
 ```
 
-**测试现状(务必先读)**:`crates/nsc-core/tests/` 下大部分文件是**空壳** —— 内容为
-`#[ignore]` 的 `_placeholder`,0 断言(README 里描述的 `queue` / `scheduler` /
-`startup_recovery` 等集成测试在重构中被退役,尚未重写)。当前**真正有断言**的只有:
+**测试现状**:`crates/nsc-core/tests/` 下**已无空壳**,只剩 8 个真实集成测试文件;
+覆盖主力在 `src/` 内嵌的 `#[cfg(test)]` 模块(lib 单测 232 个,整仓 302 个用例)。
 
 | 文件 | 覆盖 |
 |---|---|
@@ -137,10 +136,17 @@ cargo test -p nsc-core --test ai_openai
 | `splitter_new.rs` | 章节切分 |
 | `queue_worker_panic.rs` | worker 的 per-job panic 边界 |
 | `ai_openai.rs` | `OpenAiProvider`(wiremock):usage 缺失、审核拦截、非 2xx |
+| `cleaner.rs` | 清洗规则 |
 
-`cargo test -p nsc-core` 里 lib 单测是主要覆盖来源。**不要把空壳文件当成已覆盖**:
-要动 `splitter` / `cleaner` / `batch_scheduler` / `db::repo` 之前,先确认对应路径
-是否真的有用例(大概率没有,需自己补)。
+约定:**新测试写进被测模块的 `#[cfg(test)] mod tests`**(同文件,能直接摸私有函数),
+不要再往 `tests/` 加集成文件。要动 `splitter` / `cleaner` / `batch_scheduler` /
+`db::repo` 之前先看该模块有没有 `mod tests`。
+
+> **测"派发"必须断言终态,不能断言中间态。** `scheduler_with_notifier` 之类的夹具挂的是
+> **真 worker + 立即返回的 provider**,派发后数据库状态在另一个线程继续演进:断言"刚
+> reset 完 `started_at` 是 None"必然偶发失败(实测 15 次挂 1 次),`advance_batch` 还会
+> 顺手把下一章也跑掉。用轮询等终态(`batch_scheduler::tests::wait_chapter_status`),
+> 别用 `assert_eq!` 去赌时序。
 
 > **`README.md` 的对应章节已过时,不要照它做。** 它描述了不存在的测试
 > (`queue_provider` / `queue_notifier`)、`JobQueue` 的 worker 数与"上限 4"的强制、

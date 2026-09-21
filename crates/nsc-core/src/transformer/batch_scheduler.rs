@@ -943,6 +943,31 @@ mod tests {
         crate::db::Db::open(&dir.path().join("test.db")).unwrap()
     }
 
+    /// 轮询等待某章停止处于 `status`(带超时)。
+    ///
+    /// 为什么必须有它:`scheduler_with_notifier` 挂的是**真** worker + `InstantProvider`
+    /// (立即返回)。凡是"派发"过的用例,数据库状态都在另一个线程里继续演进 —— 直接断言
+    /// 中间态(如刚 reset 完的 `started_at.is_none()`)会随机失败。收敛到终态再断言,
+    /// 用例才是确定性的。
+    fn wait_chapter_status(
+        db: &Db,
+        tc_id: i64,
+        status: TransformStatus,
+        timeout: std::time::Duration,
+    ) -> bool {
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            let got = db.transformation_chapters().get(tc_id).unwrap().map(|t| t.status);
+            if got == Some(status) {
+                return true;
+            }
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
     /// 最小可运行环境:1 upload + 1 da + 3 chapter(idx 0..2) + 1 tn + 1 prompt + 1 model。
     /// 返回 (tn_id, c0, c1, c2, prompt_id, model_id)。
     fn seed_env(db: &Db) -> (i64, i64, i64, i64, i64, i64) {
@@ -1230,7 +1255,11 @@ mod tests {
         }
     }
 
-    /// `retry_empty_slots`:失败章重置回 pending 并重新派发;结果槽已填的章拒绝重试。
+    /// `retry_empty_slots`:失败章重置回 pending 并被重新派发,最终重新跑完。
+    ///
+    /// 只断言**终态**:派发是异步的(真 worker + 立即返回的 provider),reset 出来的
+    /// 中间态(`pending` / `started_at=None`)随时可能被 worker 覆盖,断言它必然偶发失败 ——
+    /// 实测 15 次里挂 1 次。终态则确定:重试若没真正派发,这章会一直停在 `pending`。
     #[test]
     fn retry_empty_slots_resets_failed_to_pending() {
         let db = fresh_db();
@@ -1244,14 +1273,15 @@ mod tests {
         // 让 batch 处于允许重试的状态
         db.batches().set_status(batch_id, BatchStatus::Stopped).unwrap();
 
-        let b = scheduler.retry_empty_slots(batch_id, &[c0]).unwrap();
-        assert_eq!(b.status, BatchStatus::Running, "Stopped batch 重试后应转 Running");
+        scheduler.retry_empty_slots(batch_id, &[c0]).unwrap();
 
-        let tcs = db.transformation_chapters().list_by_batch(batch_id).unwrap();
-        let retried = tcs.iter().find(|t| t.chapter_id == c0).unwrap();
-        assert_eq!(retried.status, TransformStatus::Pending, "重试后应回到 pending");
-        assert!(retried.error.is_none(), "重试应清空 error");
-        assert!(retried.started_at.is_none(), "重试应清空 started_at");
+        assert!(
+            wait_chapter_status(&db, tc_c0, TransformStatus::Done, std::time::Duration::from_secs(10)),
+            "重试必须真正重新派发并跑完(否则该章会一直停在 pending)"
+        );
+        let retried = db.transformation_chapters().get(tc_c0).unwrap().unwrap();
+        assert!(retried.error.is_none(), "重跑成功后应清空上一轮的 error");
+        assert!(retried.started_at.is_some(), "重跑后应重新盖上 started_at");
     }
 
     /// `retry_empty_slots` 拒绝非 failed/skipped 的章节(不能重试已有结果/正在跑的)。
