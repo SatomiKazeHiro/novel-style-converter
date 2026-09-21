@@ -59,8 +59,11 @@ impl<'a> WorkflowResultRepo<'a> {
     }
 
     /// 取 (batch_id, chapter_id) 对应已写入的 content —— queue.rs 拿 prev_transformed 用。
-    /// §3.3:transformation_chapters.result_content 在新设计下永远 NULL,真内容在
-    /// workflow_result_chapters.content;这里就是给 caller 拿那个 content 的入口。
+    ///
+    /// §3.3:worker 路径收口后**真内容在 `workflow_result_chapters.content`**;
+    /// `transformation_chapters.result_content` 只作为预览/兼容路径的落点
+    /// (mark_done 仍会写它,worker 传空串时经 NULLIF 落成 NULL)。本方法就是
+    /// 给 caller 拿那个权威内容的入口。
     pub fn get_content_by_batch_and_chapter(
         &self,
         batch_id: i64,
