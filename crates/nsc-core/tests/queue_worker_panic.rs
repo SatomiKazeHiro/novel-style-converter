@@ -249,8 +249,8 @@ fn worker_survives_job_panic_and_keeps_consuming() {
     );
     // 注:快照的 `running` 列表在 push_done/push_failed 后不会被清理(既有行为,
     // push_done 只往 done 追加),所以这里不断言 running 为空。
-    // 该快照目前只有 IPC `get_queue_snapshot` 会读,而前端没有任何调用点 ——
-    // 属孤儿接口,故本测试只锁定"panic 被隔离且后续 job 仍被消费"这一核心性质。
+    // 该快照的 IPC 消费方 `get_queue_snapshot` 已删除(前端从未调用),本测试是它
+    // 现在唯一的读者 —— 只锁定"panic 被隔离且后续 job 仍被消费"这一核心性质。
     assert_eq!(
         calls.load(Ordering::SeqCst),
         2,

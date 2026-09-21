@@ -392,30 +392,6 @@ export type EnqueuePayload = {
  */
 export type EnqueueAllPayload = Omit<EnqueuePayload, 'chapter_ids'>;
 
-/** `JobQueue` 鍐呴儴鐨?job 鐘舵€?涓?`TransformStatus` 鍚屽瓧闈㈤噺,浣嗚涔夊眰闈㈡湁鍒?
- * `TransformStatus` 鏄?DB 琛岀殑鎸佷箙鐘舵€?`JobStatus` 鏄?worker pool 鐨勫唴瀛樺揩鐓? */
-export type JobStatus = 'pending' | 'running' | 'done' | 'failed' | 'cancelled';
-
-/** 鍗曚釜 job 鐨勫疄鏃跺揩鐓с€傞攣浜夌敤鏃惰 job 鍙兘涓嶅嚭鐜板湪 snapshot 涓€?*/
-export interface JobInfo {
-  transformation_id: number;
-  chapter_title: string;
-  chapter_idx: number;
-  status: JobStatus;
-  error: string | null;
-  tokens_in: number | null;
-  tokens_out: number | null;
-}
-
-/** `JobQueue.snapshot()` 涓€娆℃媺鍥炵殑鍏ㄩ噺闃熷垪蹇収,鎸夌姸鎬佸垎鍥涚粍銆?
- *  閿佷簤鐢ㄦ椂杩斿洖绌?瀛楁閮戒负绌烘暟缁?,鍓嶇 1s 杞鍙笉澶勭悊銆?*/
-export interface QueueSnapshot {
-  pending: JobInfo[];
-  running: JobInfo[];
-  done: JobInfo[];
-  failed: JobInfo[];
-}
-
 /// 娓呮礂棰勮缁撴灉銆俢leaned_text 缁欏墠绔睍绀?lines_delta 涓鸿緭鍑轰笌杈撳叆鐨勮鏁板樊
 /// (瑙勫垯鎶樺彔/鍚堝苟鐭 鈫?璐熸暟;鍔犵缉杩涗笉鏀硅鏁?鈫?0;鐜版湁瀹炵幇涓嬪嚑涔庝笉浼氭)銆?
 /// chars_delta 涓哄瓧绗︽暟宸?鍔犵缉杩涙椂涓烘,鍚堝苟/鎶樺彔鏃跺彲鑳戒负璐?銆?

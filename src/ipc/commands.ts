@@ -14,7 +14,7 @@ import type {
   ChapterSegment, ChapterMeta, ChapterContentRow, Chapter,
   TransformationNovelSummary, TransformationChapterRow,
   CreateTransformationNovelInput, UpdateTransformationNovelInput,
-  EnqueuePayload, EnqueueAllPayload, QueueSnapshot,
+  EnqueuePayload, EnqueueAllPayload,
   Prompt, PromptInput, TestModelReport,
   CreateWorkflowInput, PromoteWorkflowInput, WorkflowSummary, WorkflowChapterRow, DeleteWorkflowResult,
   SourceChapterRow, ChapterWorkflowResultRow,
@@ -241,11 +241,6 @@ export const deleteWorkflow = (batchId: number): Promise<DeleteWorkflowResult> =
 
 export const listChapterWorkflowResults = (tnId: number, chapterId: number): Promise<ChapterWorkflowResultRow[]> =>
   invoke<ChapterWorkflowResultRow[]>('list_chapter_workflow_results', { tnId, chapterId });
-
-// ─── Queue ─────────────────────────────────────────────────────────────────
-export function getQueueSnapshot(): Promise<QueueSnapshot> {
-  return invoke<QueueSnapshot>('get_queue_snapshot');
-}
 
 // ─── Prompts ───────────────────────────────────────────────────────────────
 export function listPrompts(): Promise<Prompt[]> {

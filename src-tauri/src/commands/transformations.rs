@@ -5,7 +5,7 @@ use tauri::State;
 
 use nsc_core::db::Db;
 use nsc_core::models::{NewTransformationChapter, PromptKind, TransformStatus};
-use nsc_core::transformer::{BatchScheduler, JobQueue, JobSpec, QueueSnapshot};
+use nsc_core::transformer::{BatchScheduler, JobQueue, JobSpec};
 
 #[derive(Debug, Serialize)]
 pub struct TransformationChapterRow {
@@ -254,13 +254,6 @@ pub fn enqueue_all_chapters(
             ctx_next_original: payload.ctx_next_original,
         },
     )
-}
-
-/// 拉当前 `JobQueue` 快照(pending / running / done / failed 四组)。
-/// 内部锁争用时返回空 snapshot,不阻塞 caller —— 前端 UI 1s 轮询用。
-#[tauri::command]
-pub fn get_queue_snapshot(queue: State<'_, Arc<JobQueue>>) -> Result<QueueSnapshot, String> {
-    Ok(queue.snapshot())
 }
 
 #[derive(Debug, Serialize)]

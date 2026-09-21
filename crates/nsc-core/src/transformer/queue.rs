@@ -226,7 +226,12 @@ impl JobQueue {
     }
 
     /// 拉当前队列快照(pending / running / done / failed 四组)。
-    /// 内部锁争用时返回空 snapshot,不阻塞 caller —— 用于前端 UI 1s 轮询。
+    /// 内部锁争用时返回空 snapshot,不阻塞 caller。
+    ///
+    /// 注意:`running` 列表在 job 终结后**不会**被清理(push_done / push_failed 只往
+    /// 对应组追加),所以同一 tc 可能同时出现在 running 与 done/failed 里 —— 它表达的是
+    /// "曾经进入过 running",不是"此刻仍在 running"。原消费方 IPC `get_queue_snapshot`
+    /// 已删除(前端从未调用),现在只有测试在读;若要重新暴露给 UI,需要先修这个语义。
     pub fn snapshot(&self) -> QueueSnapshot {
         self.shared.inner.try_lock().map(|m| m.clone()).unwrap_or_default()
     }
