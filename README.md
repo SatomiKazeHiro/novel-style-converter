@@ -211,28 +211,37 @@ CREATE TABLE IF NOT EXISTS model_configs (
 
 ### JobQueue worker pool
 
-- 全局一个 `JobQueue`，3 worker（`main.rs` 默认值，上限 4）
+- 全局一个 `JobQueue`，**2 worker**（`src-tauri/src/lib.rs` 启动值；代码里没有"上限 4"的强制）
 - `JobQueue::new(workers, db_factory, provider_factory)` 接收两个工厂闭包
-- 每个 worker 在 `tokio::spawn` 启动时调 `db_factory()` 拿 owned `Db`，循环 `rx.recv()` 取任务
-- `db_factory` 必须返回 `Result<Db>`（owned），不能是 `Arc<Db>`（rusqlite `Connection` 不是 `Sync`，`Arc<Db>` 不是 `Send`，放进 `tokio::spawn` future 会编译失败）
+- 每个 worker 在 `tokio::spawn` 启动时调 `db_factory()` 拿 **`Arc<Db>`**，循环 `rx.recv()` 取任务
+- `db_factory` 必须返回 `Result<Arc<Db>>`：全应用共享**同一条** `Mutex<Connection>` 连接，
+  worker 之间靠这把锁串行化写。**不要**改成每个 worker 各自 `Db::open(path)` —— 多开连接会把
+  已经根治的 SQLITE_BUSY 请回来
 
 ### Send / Sync 边界
 
-`nsc_core::db::Db` 是 `Send` 但不是 `Sync`（`rusqlite::Connection` 内部有 `RefCell`），因此：
+`nsc_core::db::Db` 是 `Send + Sync`（内部就是 `Mutex<Connection>`，`Db::open()` 返回 `Arc<Db>`），
+可以自由跨线程共享：
 
-- **不能**把 `Arc<Db>` 移入 `Task::perform` future 或 `spawn_blocking` closure
-- **正确做法**：所有异步 DB 访问都捕获 `db_path: PathBuf`，在 `spawn_blocking` 内调 `Db::open(&path)` 拿 owned Db，操作完即 drop
-- `Arc<JobQueue>` 是 `Send`（内部是 `mpsc::UnboundedSender` + `Arc<SharedQueue>`），可以直接跨 future 持有
+- **可以**把 `Arc<Db>` clone 进 worker 闭包 / scheduler / recorder（`move || Ok(db.clone())`）
+- 需要借用底层连接时用 `db.lock()`（返回 `MutexGuard<Connection>`），它走 `sync::lock_recover`，
+  中毒时恢复而非 panic
+- **`db.lock()` 不可重入**：一边持有 `db.xxx()` 返回的 repo guard 一边再取锁会**永久挂住**
+  （不是报错）。guard 活到语句结束，所以别把 `db.yyy()` 写进 `if let db.xxx()...` 的条件里
 
-`transformer::DefaultTransformer` 改为 owned `Box<dyn AiProvider>`（不再借用），这样 `Box<dyn Transformer>` 能装下整个 transformer 实例。
+`transformer::DefaultTransformer` 持有 owned `Box<dyn AiProvider>`（不借用），这样
+`Box<dyn Transformer>` 能装下整个 transformer 实例。
 
 ### Schema migration
 
-`migrations/0001_init.sql` 所有 `CREATE TABLE` / `CREATE INDEX` 都加 `IF NOT EXISTS`。原因：worker factory 会在同一 DB 文件路径上反复 `Db::open`，每次 `execute_batch(SCHEMA_V1)` 都要幂等。
+`migrations/` 下现有 **31** 个 SQL 文件。DDL 保持 `IF NOT EXISTS`；但 `ALTER TABLE ... ADD COLUMN`
+SQLite **不支持** `IF NOT EXISTS`，靠 `db/pool.rs::run_schemas` 的 `schema_versions` 表保证每条只跑一次
+（启动时对同一个库反复跑迁移是常态，所以"已应用的迁移绝不重跑"是硬要求）。
 
 ### 错误处理
 
-8 种 Error 变体（`Db` / `Io` / `Http` / `Ai` / `Splitter` / `Validation` / `NotFound` / `Serde`），通过 `thiserror` 定义。原则：
+**9** 种 Error 变体（`Db` / `Io` / `Http` / `Ai` / `Splitter` / `Validation` / `NotFound` / `Serde` /
+`Other`），通过 `thiserror` 定义（`error.rs` 的文档注释写"8 变体 + 1 兜底"，`Other` 也是变体，共 9 个）。原则：
 
 - **不重试**：AI 失败标 `Failed`、写 `error`，让用户手动重试
 - **失败不弹模态**：仅更新表 + 发 UI 消息，在 Queue 页红点提示
@@ -398,28 +407,43 @@ Phase 11(已完成):Transform 结果查看页
 ### 测试
 
 ```bash
-# nsc-core 全套测试（23 个）
+# Rust：整仓 302 个用例（nsc-core lib 单测 232 + 8 个集成文件 62）
+cargo test --workspace
+
+# 只跑 nsc-core
 cargo test -p nsc-core
 
-# 单独跑某个测试文件
-cargo test -p nsc-core --test splitter
-cargo test -p nsc-core --test queue
+# 单个集成测试文件（真实文件名，不是模块名）
+cargo test -p nsc-core --test splitter_new
+cargo test -p nsc-core --test cleaner
 cargo test -p nsc-core --test ai_openai
+cargo test -p nsc-core --test queue_worker_panic
 ```
 
-测试覆盖：
+**覆盖主力在 `src/` 内嵌的 `#[cfg(test)] mod tests`**，不在 `tests/` 里：`crates/nsc-core/tests/`
+目前只有下面 8 个真实集成文件（历史上那批 `#[ignore]` 空壳已全部删除）。同一模块的用例优先写在
+被测文件内，能直接访问私有函数。
 
-| 测试文件 | 覆盖点 |
-|---|---|
-| `db_chapter` / `db_novel` / `db_transformation` / `db_prompt` / `db_model_config` | CRUD + 级联删除 + 状态机 + prev/next context |
-| `splitter` | 中文章节、回目标题、空行兜底、Chinese-aware word_count |
-| `prompts` | 模板变量替换、prev_transformed 缺失兜底、顺序拼接 |
-| `ai_trait` | `AiProvider` trait + DTO 序列化 |
-| `ai_openai` | wiremock 起 mock → OpenAI 200 / 401 / 429 解析 |
-| `transformer` | 假 provider 跑通完整 render → AI → result 流程 |
-| `queue` | fake provider + tempfile DB，验证状态机 + Done / Failed 写入 |
-| `queue_provider` | wiremock → 验证 worker 命中 `model_config.base_url` + 401 → Failed |
-| `queue_notifier` | enqueue / run_job 结束后调用注册的 notifier 闭包 |
+集成测试文件及其覆盖点：
+
+| 测试文件 | 用例 | 覆盖点 |
+|---|---|---|
+| `splitter_new.rs` | 23 | 中文章节、回目标题、空行兜底、zh-aware word_count |
+| `cleaner.rs` | 18 | 清洗规则（硬折行合并 / 缩进 / 不可见字节归一） |
+| `ai_openai.rs` | 9 | wiremock：200 正常解析、usage 缺失 → NULL、审核拦截 422、非 2xx |
+| `append_chapters.rs` | 4 | 往已 stopped 的 batch 追章节 |
+| `chapters_idx_invariant.rs` | 3 | `chapters.idx` 紧致不变式 |
+| `transformer_ctx.rs` | 3 | `read_context` 邻章切片顺序 |
+| `promotion_word_count.rs` | 1 | 转正路径的 word_count |
+| `queue_worker_panic.rs` | 1 | worker 的 per-job panic 边界（单章 panic 不带走 worker） |
+
+lib 单测按模块分布（`cargo test -p nsc-core --lib -- --list`）：`db::repo` 106、`transformer`
+41、`upload` 20、`prompts` 19、`encoding` 11、`batch_scheduler` 8、`provider_cache` 8、`queue` 7、
+`startup_recovery` 6、`startup_cleanup` 6、`sync` 4，其余为 models / catalog / text 等。
+
+> **测"派发"只能断言终态。** 调度器测试挂的是真 worker + 立即返回的 provider，派发后数据库状态
+> 在另一个线程继续演进；断言中间态（如"刚 reset 完 `started_at` 是 None"）会偶发失败。用轮询等
+> 终态（见 `batch_scheduler::tests::wait_chapter_status`），别用 `assert_eq!` 赌时序。
 
 前端测试在 `src/__tests__/`,用 vitest + `vi.mock('@tauri-apps/api/core')` 隔离 IPC(Tauri 2 的 invoke 入口从 `tauri` 改 `core`)。
 ```bash
@@ -431,7 +455,8 @@ pnpm test       # 或 npx vitest run
 跑 release build 验证 main 启动路径不 panic（无显示器 / CI 也能用）：
 
 ```bash
-cargo build -p nsc-desktop --release
+# 先产出 release 二进制（smoke.ps1 检查的是 target/release/nsc-desktop.exe）
+pnpm tauri build --bundles msi
 
 # 跑 4s 验证不 panic（GNU `timeout` 在 Windows 不可用，PowerShell 替代）
 pwsh scripts/smoke.ps1
@@ -454,7 +479,8 @@ pwsh scripts/smoke.ps1
 - **api_key**：你的 key
 - **model**：模型名（如 `deepseek-chat`、`gpt-4o-mini`）
 - **max_tokens** / **temperature**：可选
-- **concurrency**：当前未使用，保留字段
+- **concurrency**：per-model 并发上限，**已生效**——`provider_cache` 按 `model_config_id` 建共享信号量，
+  每个 job 取一个 permit 限流
 
 填完点 [💾 保存] → [🔌 测试连接] 确认能 ping 通。
 
@@ -523,7 +549,9 @@ DataAsset 页 → 选某个 transformation_novel → 章节行点 `[▶ 转换�
 - **平台**：仅 Windows 10+ / 11
 - **存储**：单 SQLite 文件，本机位置 `%APPDATA%/novel-style-converter/data.db`
 - **API key**：明文存数据库（用户机器本地，无服务器）
-- **并发**：全局一个 worker pool，大小可配置（默认 2，`src-tauri/src/lib.rs`；上限 4）。`ModelConfig.concurrency` 字段保留但当前未使用——为后续 per-config 限流扩展留口，避免用户对该字段产生行为预期
+- **并发**：全局一个 worker pool，2 个 worker（`src-tauri/src/lib.rs`；代码里**没有**"上限 4"的强制）。
+  `ModelConfig.concurrency` 是 **per-model** 并发上限且**已生效**：`provider_cache` 按 `model_config_id`
+  建共享信号量，每个 job 取一个 permit 限流（`concurrency <= 0` 会被当作 1）
 - **级联删除**：SQLite 外键启用（`PRAGMA foreign_keys = ON`），删 upload 级联 data_asset / chapters / transformation_novels / transformation_chapters
 - **响应延迟**：UI 不被 IO/网络阻塞（DB 与 HTTP 都跑在 tokio runtime）
 
