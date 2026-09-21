@@ -153,39 +153,6 @@
       :data-asset-id="tnDialogDataAssetId"
       @submit="onCreateTn"
     />
-
-    <ConfirmDialog
-      v-model:open="deleteUploadConfirmOpen"
-      title="删除上传原文"
-      :message="deleteUploadMessage"
-      kind="danger"
-      confirm-text="删除"
-      @confirm="doDeleteUpload"
-    />
-
-    <ConfirmDialog
-      v-model:open="deleteTnConfirmOpen"
-      title="删除转换小说"
-      :message="deleteTnMessage"
-      kind="danger"
-      confirm-text="删除"
-      @confirm="doDeleteTn"
-    />
-
-    <ConfirmDialog
-      v-model:open="deleteDaConfirmOpen"
-      title="删除数据资产"
-      :message="deleteDaMessage"
-      kind="danger"
-      confirm-text="删除"
-      @confirm="doDeleteDa"
-    />
-
-    <AlertDialog
-      v-model:open="alertOpen"
-      :title="alertTitle"
-      :message="alertMessage"
-    />
   </section>
 </template>
 
@@ -201,8 +168,7 @@ import PageHeader from '../components/ui/PageHeader.vue';
 import Tag from '../components/ui/Tag.vue';
 import UploadDialog from '../components/UploadDialog.vue';
 import TransformationNovelDialog from '../components/TransformationNovelDialog.vue';
-import ConfirmDialog from '../components/ui/ConfirmDialog.vue';
-import AlertDialog from '../components/ui/AlertDialog.vue';
+import { alertDialog, confirmDialog } from '../composables/useConfirm';
 import { useLibraryStore } from '../stores/library';
 import { formatSize, formatTime, formatWordCount } from '../utils/format';
 import type { UploadSummary, TransformationNovelSummary } from '../ipc/types';
@@ -248,26 +214,10 @@ const tnDialogDataAssetId = ref(0);
 const renamingId = ref<number | null>(null);
 const renameDraft = ref('');
 
-const deleteUploadConfirmOpen = ref(false);
-const deleteUploadMessage = ref('');
-const deleteUploadId = ref<number | null>(null);
-
-const deleteTnConfirmOpen = ref(false);
-const deleteTnMessage = ref('');
-const deleteTnId = ref<number | null>(null);
-
-const deleteDaConfirmOpen = ref(false);
-const deleteDaMessage = ref('');
-const deleteDaId = ref<number | null>(null);
-
-const alertOpen = ref(false);
-const alertTitle = ref('提示');
-const alertMessage = ref('');
-
+/// 提示框走全局 alertDialog()（composables/useConfirm.ts）。
+/// 这里保留同名薄包装：调用点已有十几处，且都是"告知用户就完事"，不需要 await 结果。
 function showAlert(title: string, message: string) {
-  alertTitle.value = title;
-  alertMessage.value = message;
-  alertOpen.value = true;
+  void alertDialog({ title, message });
 }
 
 const uploadColumns = [
@@ -398,28 +348,27 @@ async function onUpload(input: { filePath: string; filename: string }) {
 }
 
 async function onDeleteUpload(id: number, filename: string) {
-  deleteUploadId.value = id;
+  let message = 'Confirm delete upload "' + filename + '"?';
   try {
     const preview = await previewUploadDeletion(id);
     const list = preview.derived_data_assets;
-    if (list.length === 0) {
-      deleteUploadMessage.value = 'Confirm delete upload "' + filename + '"?';
-    } else {
+    if (list.length > 0) {
       const lines = ['This upload produced the following data assets (will become orphans, delete them from the DataAssets tab if needed):'];
       for (const item of list) {
         lines.push('  - #' + item.id + ' ' + item.title + ' (' + item.chapters_count + ' chapters, ' + item.tn_count + ' workflows)');
       }
-      deleteUploadMessage.value = lines.join('\n');
+      message = lines.join('\n');
     }
-  } catch (e: unknown) {
-    deleteUploadMessage.value = 'Confirm delete upload "' + filename + '"?';
+  } catch {
+    // 预览失败就退回朴素文案，仍然允许删除。
   }
-  deleteUploadConfirmOpen.value = true;
-}
-
-async function doDeleteUpload() {
-  const id = deleteUploadId.value;
-  if (id == null) return;
+  const ok = await confirmDialog({
+    title: '删除上传原文',
+    message,
+    confirmText: '删除',
+    kind: 'danger',
+  });
+  if (!ok) return;
   try {
     await store.removeUpload(id);
   } catch (e: unknown) {
@@ -483,14 +432,13 @@ async function onSaveRename(id: number) {
 }
 
 async function onDeleteTn(id: number, title: string) {
-  deleteTnId.value = id;
-  deleteTnMessage.value = `确认删除转换小说 "${title}"？历史转换结果一并删除。`;
-  deleteTnConfirmOpen.value = true;
-}
-
-async function doDeleteTn() {
-  const id = deleteTnId.value;
-  if (id == null) return;
+  const ok = await confirmDialog({
+    title: '删除转换小说',
+    message: `确认删除转换小说 "${title}"？历史转换结果一并删除。`,
+    confirmText: '删除',
+    kind: 'danger',
+  });
+  if (!ok) return;
   try {
     await store.removeTransformationNovel(id);
   } catch (e: unknown) {
@@ -499,20 +447,24 @@ async function doDeleteTn() {
 }
 
 async function onDeleteDa(id: number, title: string, tnCount: number) {
-  deleteDaId.value = id;
+  // tnCount > 0 时原文案是"为避免误删，请先去转换工程页删除" —— 那是明确的**阻止**语义，
+  // 但旧实现仍把确认按钮接到删除上（用户只能靠点"取消"保命，很容易误删）。
+  // 这里按文案本意修成真正的阻止：只提示，不提供删除入口。
   if (tnCount > 0) {
-    deleteDaMessage.value = `确认删除数据资产 "${title}"？
-
-该资产被 ${tnCount} 个转换工程引用，删除将会连带删除这些工程及其全部工作流结果。为避免误删，请先去转换工程页删除。`;
-  } else {
-    deleteDaMessage.value = `确认删除数据资产 "${title}"？解析出的章节将一并删除。`;
+    showAlert(
+      '无法删除',
+      `数据资产 "${title}" 被 ${tnCount} 个转换工程引用，删除将会连带删除这些工程及其全部工作流结果。
+为避免误删，请先去转换工程页删除。`,
+    );
+    return;
   }
-  deleteDaConfirmOpen.value = true;
-}
-
-async function doDeleteDa() {
-  const id = deleteDaId.value;
-  if (id == null) return;
+  const ok = await confirmDialog({
+    title: '删除数据资产',
+    message: `确认删除数据资产 "${title}"？解析出的章节将一并删除。`,
+    confirmText: '删除',
+    kind: 'danger',
+  });
+  if (!ok) return;
   try {
     await store.removeDataAsset(id);
   } catch (e: unknown) {

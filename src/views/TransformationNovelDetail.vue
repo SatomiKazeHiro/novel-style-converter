@@ -30,7 +30,7 @@ import PageHeader from '../components/ui/PageHeader.vue';
 import IconArrowLeft from '~icons/lucide/arrow-left';
 import IconAlertTriangle from '~icons/lucide/alert-triangle';
 import { countWords, formatTime, formatWordCount } from '../utils/format';
-import ConfirmDialog from '../components/ui/ConfirmDialog.vue';
+import { confirmDialog } from '../composables/useConfirm';
 import CreateBatchDialog from '../components/CreateBatchDialog.vue';
 import PromoteWorkflowDialog from '../components/PromoteWorkflowDialog.vue';
 import AppendChaptersDialog from '../components/AppendChaptersDialog.vue';
@@ -272,8 +272,6 @@ const openSourceResultsQuery = useQuery({
 });
 const openSourceResults = computed<ChapterWorkflowResultRow[]>(() => openSourceResultsQuery.data.value ?? []);
 
-const stopConfirmOpen = ref(false);
-const stopTargetId = ref<number | null>(null);
 const retrySelectedIds = ref<Set<number>>(new Set());
 
 /// 通用错误/提示弹窗 —— 后端报错或前置校验失败时统一弹出,不再静默 console.error。
@@ -284,6 +282,11 @@ function showAlert(title: string, message: string) {
   alertTitle.value = title;
   alertMessage.value = message;
   alertOpen.value = true;
+}
+/// 删除失败走 showAlert —— 确认框此时已关闭，错误必须另有出口，
+/// 否则删除失败会变成静默失败（常见原因是状态不可删，后端拒绝）。
+function onDeleteWorkflowFailed(message: string) {
+  showAlert('删除失败', message);
 }
 
 // Toast —— 仿照 Library.vue:433 的写法,showToast(text, action, actionLabel?)。
@@ -523,69 +526,58 @@ async function retryFromFailureDetail() {
   failureDetailChapter.value = null;
 }
 
-function askStopWorkflow(id: number) {
-  stopTargetId.value = id;
-  stopConfirmOpen.value = true;
-}
-
-// 工作流删除:仅 stopped/completed/terminated/cancelled 状态可删(running/pending/paused 由后端拒绝)。
-// UI 层再做一次前置校验:不允许误触发正在跑的工作流。
-const DELETEABLE_STATUSES = new Set(['stopped', 'completed', 'terminated', 'cancelled']);
-const deleteConfirmOpen = ref(false);
-const deleteTargetId = ref<number | null>(null);
-const deleteTargetLabel = ref<string>('');
-const deleteTargetPromotedCount = ref<number>(0);
-const deleteSubmitting = ref(false);
-const deleteError = ref<string | null>(null);
-
-/// 删除确认弹窗的 message。promoted_count > 0 时重点提示:已派生 da 的来源会被抹掉。
-const deleteConfirmMessage = computed<string>(() => {
-  const n = deleteTargetPromotedCount.value;
-  const label = deleteTargetLabel.value;
-  const base = `确认删除 ${label}?\n此操作不可撤销 —— 工作流、所有章节结果、转换记录都会被删除。`;
-  if (n > 0) {
-    return base + `\n已有 ${n} 份数据资产从此工作流派生，删除后它们的来源字段会被清空(数据资产本身保留)。`;
-  }
-  return base + (deleteError.value ? `\n\n${deleteError.value}` : '');
-});
-function askDeleteWorkflow(w: WorkflowSummary) {
-  if (!DELETEABLE_STATUSES.has(w.status)) return;
-  deleteTargetId.value = w.id;
-  deleteTargetLabel.value = w.label ?? `工作流 #${w.id}`;
-  deleteTargetPromotedCount.value = w.promoted_count;
-  deleteError.value = null;
-  deleteConfirmOpen.value = true;
-}
-
-async function confirmDeleteWorkflow() {
-  const id = deleteTargetId.value;
-  if (id === null) return;
-  deleteSubmitting.value = true;
-  deleteError.value = null;
-  try {
-    const res = await store.deleteWorkflow(id);
-    if (selectedWorkflowId.value === id) closeWorkflowPanel();
-    deleteConfirmOpen.value = false;
-    deleteTargetId.value = null;
-    if (res.promoted_data_asset_count > 0) {
-      console.info(`[delete_workflow] 已抹掉 ${res.promoted_data_asset_count} 份数据资产的来源工作流字段`);
-    }
-  } catch (e: unknown) {
-    deleteError.value = e instanceof Error ? e.message : String(e);
-  } finally {
-    deleteSubmitting.value = false;
-  }
-}
-async function confirmStopWorkflow() {
-  const id = stopTargetId.value;
-  if (id === null) return;
+async function askStopWorkflow(id: number) {
+  const ok = await confirmDialog({
+    title: '停止工作流',
+    message: '停止后当前章节会完成,后续章节标记为已跳过。确定停止吗?',
+    confirmText: '停止',
+    kind: 'danger',
+  });
+  if (!ok) return;
   try {
     // store.stop 自动 invalidate [workflowChapters,batchId] + [workflows],无需手动 loadChapters
     await store.stop(id);
   } catch (e: unknown) {
     console.error(e);
   }
-  stopTargetId.value = null;
+}
+
+// 工作流删除:仅 stopped/completed/terminated/cancelled 状态可删(running/pending/paused 由后端拒绝)。
+// UI 层再做一次前置校验:不允许误触发正在跑的工作流。
+const DELETEABLE_STATUSES = new Set(['stopped', 'completed', 'terminated', 'cancelled']);
+const deleteSubmitting = ref(false);
+
+/// 删除工作流 —— 确认框走全局服务，目标信息直接从入参 w 拼装，
+/// 不再需要 deleteTargetId / deleteTargetLabel / deleteTargetPromotedCount 三个 ref。
+/// 失败走 onDeleteWorkflowFailed()（行内提示弹窗），不再拼进确认框文案。
+async function askDeleteWorkflow(w: WorkflowSummary) {
+  if (!DELETEABLE_STATUSES.has(w.status)) return;
+  const label = w.label ?? `工作流 #${w.id}`;
+  const n = w.promoted_count;
+  const base = `确认删除 ${label}?\n此操作不可撤销 —— 工作流、所有章节结果、转换记录都会被删除。`;
+  const message = n > 0
+    ? base + `\n已有 ${n} 份数据资产从此工作流派生，删除后它们的来源字段会被清空(数据资产本身保留)。`
+    : base;
+  const ok = await confirmDialog({
+    title: '删除工作流',
+    message,
+    confirmText: '删除',
+    kind: 'danger',
+  });
+  if (!ok) return;
+
+  deleteSubmitting.value = true;
+  try {
+    const res = await store.deleteWorkflow(w.id);
+    if (selectedWorkflowId.value === w.id) closeWorkflowPanel();
+    if (res.promoted_data_asset_count > 0) {
+      console.info(`[delete_workflow] 已抹掉 ${res.promoted_data_asset_count} 份数据资产的来源工作流字段`);
+    }
+  } catch (e: unknown) {
+    onDeleteWorkflowFailed(e instanceof Error ? e.message : String(e));
+  } finally {
+    deleteSubmitting.value = false;
+  }
 }
 
 // 「补充章节」对话框状态 —— 仅 stopped batch 可 append(spec:stopped-batch-append-chapters)。
@@ -1206,15 +1198,7 @@ watch(() => sources.value, (list) => {
       </template>
     </Dialog>
 
-    <!-- 工作流删除确认弹窗(自带 deleteError 展示) -->
-    <ConfirmDialog
-      v-model:open="deleteConfirmOpen"
-      title="删除工作流"
-      :message="deleteConfirmMessage"
-      kind="danger"
-      confirm-text="删除"
-      @confirm="confirmDeleteWorkflow"
-    />
+    <!-- 工作流删除/停止的确认框已改走全局 confirmDialog()（composables/useConfirm.ts） -->
     <div v-if="deleteSubmitting" class="hint center">删除中...</div>
 <PromoteWorkflowDialog
       v-if="promoteTarget !== null"
@@ -1239,14 +1223,6 @@ watch(() => sources.value, (list) => {
       @submit="onCreateBatch"
     />
 
-    <ConfirmDialog
-      v-model:open="stopConfirmOpen"
-      title="Stop Workflow"
-      :message="'停止后当前章节会完成,后续章节标记为已跳过。确定停止吗?'"
-      kind="danger"
-      confirm-text="停止"
-      @confirm="confirmStopWorkflow"
-    />
 
     <!-- 通用提示弹窗：后端报错或前置校验失败时统一弹出 -->
     <Dialog

@@ -32,31 +32,6 @@
       </div>
     </div>
 
-    <ConfirmDialog
-      v-model:open="confirmOpen"
-      title="删除数据资产"
-      :message="confirmMessage"
-      kind="danger"
-      confirm-text="删除"
-      @confirm="doDelete"
-    />
-
-    <AlertDialog
-      v-model:open="alertOpen"
-      title="提示"
-      :message="alertMessage"
-    />
-
-    <ConfirmDialog
-      v-model:open="dirtyGuardOpen"
-      title="未保存的修改"
-      message="当前章节有未保存的修改,切换会丢弃。继续?"
-      confirm-text="丢弃修改"
-      kind="danger"
-      @confirm="onConfirmDiscard"
-      @cancel="onCancelDiscard"
-    />
-
     <div class="panes">
       <div class="pane">
         <div class="pane-header">
@@ -134,8 +109,7 @@ import { useRoute, useRouter } from 'vue-router';
 import { RecycleScroller } from 'vue-virtual-scroller';
 import Button from '../components/ui/Button.vue';
 import PageHeader from '../components/ui/PageHeader.vue';
-import ConfirmDialog from '../components/ui/ConfirmDialog.vue';
-import AlertDialog from '../components/ui/AlertDialog.vue';
+import { alertDialog, confirmDialog } from '../composables/useConfirm';
 import IconArrowLeft from '~icons/lucide/arrow-left';
 import { useDataAssetStore } from '../stores/dataAsset';
 import { useLibraryStore } from '../stores/library';
@@ -146,16 +120,8 @@ const router = useRouter();
 const store = useDataAssetStore();
 const library = useLibraryStore();
 
-const confirmOpen = ref(false);
-const confirmMessage = computed(() => `确认删除数据资产 "${store.title}"？解析出的章节将一并删除，删除后可重新解析。`);
-const alertOpen = ref(false);
-const alertMessage = ref('');
-
-/// dirty 守卫:章节编辑后切换章节/返回前的拦截
-const dirtyGuardOpen = ref(false);
-const pendingSelectIdx = ref<number | null>(null);
-let pendingNavigation: (() => void) | null = null;
-/// 返回按钮触发的导航,在 beforeRouteLeave 里拦;路由组件卸载前如果 dirty 则走弹窗。
+/// 确认/提示框走全局服务（composables/useConfirm.ts），不再需要本地 open/message 状态。
+/// dirty 守卫也改成 await 形式，pending* 那两个"挂起后续动作"的变量随之删除。
 
 const chaptersWithIdx = computed(() =>
   store.chapters.map((s, idx) => ({ ...s, idx })),
@@ -190,38 +156,43 @@ onMounted(async () => {
   store.selectFirstIfNone();
 });
 
-/// 离开页面前的全局守卫:有 dirty 编辑 → 弹 dirtyGuard,用户确认丢弃才放行
-function tryLeave(next: () => void): boolean {
+/// 离开页面前的 dirty 守卫：有未保存编辑 → 弹确认，用户选择丢弃才继续。
+/// 迁移前它是"同步返回是否放行 + 把后续动作存进 pendingNavigation"的两段式；
+/// 现在确认框可以直接 await，于是改成 async：调用方 `if (!(await tryLeave())) return;`。
+async function tryLeave(): Promise<boolean> {
   if (!store.editing || !store.editingDirty) return true;
-  pendingNavigation = next;
-  dirtyGuardOpen.value = true;
-  return false;
+  const ok = await confirmDialog({
+    title: '未保存的修改',
+    message: '当前章节有未保存的修改,切换会丢弃。继续?',
+    confirmText: '丢弃修改',
+    kind: 'danger',
+  });
+  if (ok) store.cancelEdit();
+  return ok;
 }
 
-function onBack() {
-  if (!tryLeave(() => void router.push('/data-assets'))) return;
+async function onBack() {
+  if (!(await tryLeave())) return;
   void router.push('/data-assets');
 }
 
 async function onDelete() {
   if (store.tnCount > 0) return;
-  confirmOpen.value = true;
-}
-
-async function doDelete() {
+  const ok = await confirmDialog({
+    title: '删除数据资产',
+    message: `确认删除数据资产 "${store.title}"？解析出的章节将一并删除，删除后可重新解析。`,
+    confirmText: '删除',
+    kind: 'danger',
+  });
+  if (!ok) return;
+  if (!(await tryLeave())) return;
   const id = store.dataAssetId;
   if (id == null) return;
-  if (!tryLeave(() => void doDeleteActual(id))) return;
-  await doDeleteActual(id);
-}
-
-async function doDeleteActual(id: number) {
   try {
     await library.removeDataAsset(id);
     void router.push('/data-assets');
   } catch (e: unknown) {
-    alertMessage.value = e instanceof Error ? e.message : String(e);
-    alertOpen.value = true;
+    void alertDialog({ title: '提示', message: e instanceof Error ? e.message : String(e) });
   }
 }
 
@@ -233,36 +204,10 @@ function onDraftInput(e: Event) {
   store.onDraftInput(t);
 }
 
-function onChapterClick(idx: number) {
-  if (store.editing && store.editingDirty) {
-    pendingSelectIdx.value = idx;
-    dirtyGuardOpen.value = true;
-    return;
-  }
+async function onChapterClick(idx: number) {
+  if (!(await tryLeave())) return;
   if (store.editing) store.cancelEdit();
   store.selectChapter(idx);
-}
-
-function onConfirmDiscard() {
-  dirtyGuardOpen.value = false;
-  if (pendingSelectIdx.value !== null) {
-    store.cancelEdit();
-    store.selectChapter(pendingSelectIdx.value);
-    pendingSelectIdx.value = null;
-    return;
-  }
-  if (pendingNavigation) {
-    const nav = pendingNavigation;
-    pendingNavigation = null;
-    store.cancelEdit();
-    nav();
-  }
-}
-
-function onCancelDiscard() {
-  dirtyGuardOpen.value = false;
-  pendingSelectIdx.value = null;
-  pendingNavigation = null;
 }
 </script>
 

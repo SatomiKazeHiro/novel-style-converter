@@ -71,15 +71,6 @@
       @submit="onSubmit"
     />
 
-    <ConfirmDialog
-      v-model:open="deleteConfirmOpen"
-      title="归档模型"
-      message="归档后会清空 API key 并隐藏该行，历史转换结果仍可显示来源 model 名 / 端点 / 并发配置。确认归档？"
-      kind="danger"
-      confirm-text="归档"
-      @confirm="doDelete"
-    />
-
     <CatalogUpdateDialog
       v-model:open="catalogUpdateOpen"
       @updated="refreshCatalogStatus"
@@ -94,7 +85,7 @@ import PageHeader from '../components/ui/PageHeader.vue';
 import DataTable from '../components/ui/DataTable.vue';
 import { useDynamicTableHeight } from '../composables/useDynamicTableHeight';
 import Tag from '../components/ui/Tag.vue';
-import ConfirmDialog from '../components/ui/ConfirmDialog.vue';
+import { confirmDialog } from '../composables/useConfirm';
 import ModelDialog from '../components/ModelDialog.vue';
 import CatalogUpdateDialog from '../components/CatalogUpdateDialog.vue';
 import { useModelsStore } from '../stores/models';
@@ -112,8 +103,7 @@ const { maxHeight: modelTableMaxHeight } = useDynamicTableHeight({
 });
 const dialogOpen = ref(false);
 const dialogInitial = ref<ModelConfigInput | null>(null);
-const deleteConfirmOpen = ref(false);
-const deleteTargetId = ref<number | null>(null);
+/// 归档确认走全局 confirmDialog()（composables/useConfirm.ts），无需本地 open/target 状态。
 
 /// DataTable(TanStack)列定义 —— name / id / base_url 在模板里用 slot 处理 archived 样式,
 /// 列定义只声明 header + id。concurrency 是数字列,UI 端用 tabular-nums 右对齐。
@@ -184,14 +174,14 @@ async function onSubmit(input: ModelConfigInput) {
   await store.save(input);
 }
 
-function onDelete(id: number) {
-  deleteTargetId.value = id;
-  deleteConfirmOpen.value = true;
-}
-
-async function doDelete() {
-  const id = deleteTargetId.value;
-  if (id == null) return;
+async function onDelete(id: number) {
+  const ok = await confirmDialog({
+    title: '归档模型',
+    message: '归档后会清空 API key 并隐藏该行，历史转换结果仍可显示来源 model 名 / 端点 / 并发配置。确认归档？',
+    confirmText: '归档',
+    kind: 'danger',
+  });
+  if (!ok) return;
   await store.remove(id);
 }
 

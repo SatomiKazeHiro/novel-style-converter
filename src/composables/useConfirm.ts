@@ -17,6 +17,8 @@ export interface ConfirmRequest {
   cancelText?: string;
   /// danger 用于不可逆操作（删除 / 放弃 / 覆盖），确认按钮走红色。
   kind?: 'default' | 'danger';
+  /// true = 纯提示，只渲染一个"知道了"按钮（对应旧的 AlertDialog）。
+  alertOnly?: boolean;
 }
 
 const current = shallowRef<ConfirmRequest | null>(null);
@@ -46,6 +48,12 @@ export function useConfirmHost() {
     resolve?.(ok);
   }
   return { current, settle };
+}
+
+/// 只有一个"知道了"按钮的提示框（对应旧的 AlertDialog）。
+/// 与 confirmDialog 共用同一个宿主与队列，只是不渲染取消按钮。
+export function alertDialog(req: Omit<ConfirmRequest, 'cancelText' | 'alertOnly'>): Promise<boolean> {
+  return confirmDialog({ ...req, cancelText: '知道了', alertOnly: true });
 }
 
 export type ConfirmApi = typeof confirmDialog;

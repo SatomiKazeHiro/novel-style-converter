@@ -77,21 +77,6 @@
       v-model:open="viewOpen"
       :initial="viewTarget"
     />
-
-    <ConfirmDialog
-      v-model:open="deleteConfirmOpen"
-      title="归档提示词"
-      :message="deleteConfirmMessage"
-      kind="danger"
-      confirm-text="归档"
-      @confirm="doDelete"
-    />
-
-    <AlertDialog
-      v-model:open="alertOpen"
-      title="提示"
-      :message="alertMessage"
-    />
   </section>
 </template>
 
@@ -101,8 +86,7 @@ import Button from '../components/ui/Button.vue';
 import DataTable from '../components/ui/DataTable.vue';
 import { useDynamicTableHeight } from '../composables/useDynamicTableHeight';
 import Tag from '../components/ui/Tag.vue';
-import ConfirmDialog from '../components/ui/ConfirmDialog.vue';
-import AlertDialog from '../components/ui/AlertDialog.vue';
+import { alertDialog, confirmDialog } from '../composables/useConfirm';
 import PageHeader from '../components/ui/PageHeader.vue';
 import PromptEditDialog from '../components/PromptEditDialog.vue';
 import PromptViewDialog from '../components/PromptViewDialog.vue';
@@ -144,13 +128,8 @@ const dialogInitial = ref<Prompt | undefined>(undefined);
 const viewOpen = ref(false);
 const viewTarget = ref<Prompt | null>(null);
 
-/// 删除确认 —— 用 ConfirmDialog(与 Models 一致)代替原内嵌 Dialog,
-/// 提前查引用计数,文案直接拼到 message,避免自定义 footer。
-const deleteConfirmOpen = ref(false);
-const deleteTarget = ref<Prompt | null>(null);
-const deleteConfirmMessage = ref('');
-const alertOpen = ref(false);
-const alertMessage = ref('');
+/// 归档确认与提示框都走全局服务（composables/useConfirm.ts），
+/// 不再需要本地 open / target / message 状态。
 
 onMounted(() => void store.load());
 
@@ -187,23 +166,21 @@ async function onDelete(row: Prompt) {
   } catch {
     usage = 0;
   }
-  deleteTarget.value = row;
-  deleteConfirmMessage.value = usage > 0
+  // 归档确认 —— 提前查引用计数，把计数直接拼进文案（原注释里"避免自定义 footer"的意图保留）。
+  const message = usage > 0
     ? `确认删除提示词"${row.name}"?该 prompt 当前被 ${usage} 个转换结果引用,删除(归档)后这些结果仍保留历史引用,但新建转换时无法再选用。`
     : `确认删除提示词"${row.name}"?删除为软删(归档),可在此页勾选"显示已归档"后恢复。`;
-  deleteConfirmOpen.value = true;
-}
-
-async function doDelete() {
-  const target = deleteTarget.value;
-  if (!target) return;
+  const ok = await confirmDialog({
+    title: '归档提示词',
+    message,
+    confirmText: '归档',
+    kind: 'danger',
+  });
+  if (!ok) return;
   try {
-    await store.remove(target.id);
+    await store.remove(row.id);
   } catch (e: unknown) {
-    alertMessage.value = e instanceof Error ? e.message : String(e);
-    alertOpen.value = true;
-  } finally {
-    deleteTarget.value = null;
+    void alertDialog({ title: '提示', message: e instanceof Error ? e.message : String(e) });
   }
 }
 
@@ -211,8 +188,7 @@ async function onRestore(id: number) {
   try {
     await store.restore(id);
   } catch (e: unknown) {
-    alertMessage.value = e instanceof Error ? e.message : String(e);
-    alertOpen.value = true;
+    void alertDialog({ title: '提示', message: e instanceof Error ? e.message : String(e) });
   }
 }
 

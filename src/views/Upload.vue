@@ -44,12 +44,6 @@
       :source-text="rawText"
       @confirm="onCleaningConfirm"
     />
-
-    <AlertDialog
-      v-model:open="alertOpen"
-      :title="alertTitle"
-      :message="alertMessage"
-    />
   </section>
 </template>
 
@@ -60,8 +54,7 @@ import { useRoute, useRouter } from 'vue-router';
 import Button from '../components/ui/Button.vue';
 import Tag from '../components/ui/Tag.vue';
 import PageHeader from '../components/ui/PageHeader.vue';
-import ConfirmDialog from '../components/ui/ConfirmDialog.vue';
-import AlertDialog from '../components/ui/AlertDialog.vue';
+import { alertDialog } from '../composables/useConfirm';
 import IconArrowLeft from '~icons/lucide/arrow-left';
 import { getUpload, getUploadTextChunk, updateUploadText } from '../ipc/commands';
 import { formatWordCount } from '../utils/format';
@@ -91,9 +84,6 @@ const dirty = ref(false);
 const saving = ref(false);
 const error = ref<string | null>(null);
 const cleaningOpen = ref(false);
-const alertOpen = ref(false);
-const alertTitle = ref('提示');
-const alertMessage = ref('');
 
 onMounted(async () => {
   const id = Number(route.params.uploadId);
@@ -191,8 +181,7 @@ function goParse() {
 async function openCleaning() {
   if (uploadId.value == null) return;
   if (rawText.value.length > 10 * 1024 * 1024) {
-    alertMessage.value = '文本过大,请先手动精箁';
-    alertOpen.value = true;
+    void alertDialog({ title: '提示', message: '文本过大,请先手动精简' });
     return;
   }
   // 新设计:清洗只改 uploads.original_text,不影响已有 chapters.body,无需二次确认。

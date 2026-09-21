@@ -95,21 +95,6 @@
         <Button kind="primary" :disabled="!pendingTitle.trim()" @click="confirmCommit">确认</Button>
       </template>
     </Dialog>
-
-    <ConfirmDialog
-      v-model:open="resplitConfirmOpen"
-      title="重新解析"
-      message="丢弃已保存的章节,重新走 splitter?"
-      kind="danger"
-      confirm-text="重新切分"
-      @confirm="doResplit"
-    />
-
-    <AlertDialog
-      v-model:open="alertOpen"
-      title="提示"
-      :message="alertMessage"
-    />
   </section>
 </template>
 
@@ -122,8 +107,7 @@ import 'vue-virtual-scroller/dist/vue-virtual-scroller.css';
 import Button from '../components/ui/Button.vue';
 import Dialog from '../components/ui/Dialog.vue';
 import PageHeader from '../components/ui/PageHeader.vue';
-import ConfirmDialog from '../components/ui/ConfirmDialog.vue';
-import AlertDialog from '../components/ui/AlertDialog.vue';
+import { alertDialog, confirmDialog } from '../composables/useConfirm';
 import { useChaptersStore } from '../stores/chapters';
 import { useParseEditor } from '../composables/useParseEditor';
 import { formatWordCount } from '../utils/format';
@@ -137,10 +121,6 @@ const committing = ref(false);
 
 const commitDialogOpen = ref(false);
 const pendingTitle = ref('');
-
-const resplitConfirmOpen = ref(false);
-const alertOpen = ref(false);
-const alertMessage = ref('');
 
 
 /// 章节列表按数组下标加 idx, 给 DynamicScroller 当唯一 key。
@@ -258,10 +238,13 @@ function onReset() {
 }
 
 async function onResplit() {
-  resplitConfirmOpen.value = true;
-}
-
-async function doResplit() {
+  const ok = await confirmDialog({
+    title: '重新解析',
+    message: '丢弃已保存的章节,重新走 splitter?',
+    confirmText: '重新切分',
+    kind: 'danger',
+  });
+  if (!ok) return;
   await store.reSplit();
 }
 
@@ -283,8 +266,7 @@ async function confirmCommit() {
     const newDataAssetId = await store.commit(title);
     void router.push(`/library/data/${newDataAssetId}`);
   } catch (e: unknown) {
-    alertMessage.value = e instanceof Error ? e.message : String(e);
-    alertOpen.value = true;
+    void alertDialog({ title: '提示', message: e instanceof Error ? e.message : String(e) });
   } finally {
     committing.value = false;
   }

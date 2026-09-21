@@ -12,7 +12,9 @@
   >
     <p class="message">{{ current?.message }}</p>
     <template #footer>
-      <Button @click="settle(false)">{{ current?.cancelText ?? '取消' }}</Button>
+      <Button v-if="!current?.alertOnly" @click="settle(false)">
+        {{ current?.cancelText ?? '取消' }}
+      </Button>
       <Button :kind="current?.kind === 'danger' ? 'danger' : 'primary'" @click="settle(true)">
         {{ current?.confirmText ?? '确认' }}
       </Button>

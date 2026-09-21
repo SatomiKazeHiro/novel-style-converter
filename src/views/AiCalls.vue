@@ -140,15 +140,6 @@
       :id="detailId"
       @close="detailId = null"
     />
-
-    <ConfirmDialog
-      v-model:open="clearConfirmOpen"
-      title="清空 AI 调用日志"
-      message="将删除全部 ai_call_logs 行(无法恢复)。transform / test_model 历史 token / 错误信息都会清空。确认?"
-      kind="danger"
-      confirm-text="清空"
-      @confirm="doClear"
-    />
   </section>
 </template>
 
@@ -161,7 +152,7 @@ import DataTable from '../components/ui/DataTable.vue';
 import { useDynamicTableHeight } from '../composables/useDynamicTableHeight';
 import Tag from '../components/ui/Tag.vue';
 import PageHeader from '../components/ui/PageHeader.vue';
-import ConfirmDialog from '../components/ui/ConfirmDialog.vue';
+import { confirmDialog } from '../composables/useConfirm';
 import AiCallDetail from '../components/AiCallDetail.vue';
 import { useModelsStore } from '../stores/models';
 import {
@@ -174,7 +165,6 @@ const logs = ref<AiCallLog[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const detailId = ref<number | null>(null);
-const clearConfirmOpen = ref(false);
 
 /// 模型下拉列表 —— 从 useModelsStore 拉,onMounted 时显式 load
 /// (默认 store 可能未加载,UI 进来时下拉框为空)。
@@ -325,11 +315,14 @@ function openDetail(id: number) {
   detailId.value = id;
 }
 
-function onClear() {
-  clearConfirmOpen.value = true;
-}
-
-async function doClear() {
+async function onClear() {
+  const ok = await confirmDialog({
+    title: '清空 AI 调用日志',
+    message: '将删除全部 ai_call_logs 行(无法恢复)。transform / test_model 历史 token / 错误信息都会清空。确认?',
+    confirmText: '清空',
+    kind: 'danger',
+  });
+  if (!ok) return;
   try {
     await clearAiCallLogs();
     await reload();
