@@ -50,13 +50,7 @@ novel-style-converter/
 ├─ vite.config.ts              # Vue dev/build
 ├─ tsconfig.json
 ├─ index.html
-├─ migrations/
-│  ├─ 0001_init.sql            # novels / chapters / transformations / prompts / model_configs
-│  ├─ 0002_split_uploads.sql   # uploads（原始 .txt 文件存档）
-│  ├─ 0003_chapter_byte_ranges.sql   # chapters 增加 byte_start / byte_end
-│  ├─ 0004_data_assets.sql     # data_assets（章节解析后的不可变资产）
-│  ├─ 0005_chapters_data_asset_fk.sql   # chapters → data_assets FK
-│  └─ 0006_transformation_novels_data_asset_fk.sql   # transformation_novels（独立转换目标）
+├─ migrations/                 # 31 个 SQL，0001_init.sql … 0031；见「数据模型」章节
 ├─ src/                        # Vue 前端
 │  ├─ App.vue
 │  ├─ main.ts
@@ -83,16 +77,21 @@ novel-style-converter/
 │  │  ├─ Cargo.toml
 │  │  └─ src/
 │  │     ├─ lib.rs
-│  │     ├─ error.rs           # 8 变体 Error 枚举
-│  │     ├─ models/            # Novel / Chapter / Transformation / Prompt / ModelConfig / DataAsset / TransformationNovel
-│  │     ├─ db/                # pool + migrate + 6 个 repo
-│  │     ├─ ai/                # AiProvider trait + OpenAiProvider
+│  │     ├─ error.rs           # 9 变体 Error 枚举
+│  │     ├─ models/            # Chapter / Prompt / ModelConfig / DataAsset / TransformationNovel / Batch …
+│  │     ├─ db/                # pool + migrate + repo/（12 个 repo 文件）
+│  │     ├─ ai/                # AiProvider trait + OpenAiProvider + describe_provider_error
 │  │     ├─ splitter/          # DefaultSplitter（正则分章）
-│  │     ├─ prompts/           # 内置模板 + render 函数
+│  │     ├─ prompts/           # 内置模板 + render
 │  │     ├─ cleaner/           # 文本清洗规则
-│  │     ├─ encoding/          # BOM/UTF-8/GBK/chardetng
-│  │     ├─ text/              # 文本工具
-│  │     └─ transformer/       # Transformer trait + DefaultTransformer + JobQueue
+│  │     ├─ encoding.rs        # BOM / UTF-8 / GBK / chardetng
+│  │     ├─ text.rs + text/    # 文本工具（zh-aware word_count）
+│  │     ├─ sync.rs            # 锁中毒恢复 + panic payload 解析
+│  │     ├─ recorder/          # AI 调用记账（非阻塞 channel + 自建 OS 线程）
+│  │     ├─ catalog/           # 模型目录
+│  │     ├─ startup_recovery.rs / startup_cleanup.rs   # 启动期自愈
+│  │     ├─ upload.rs          # 上传（读文件 / 解码 / sha256 / 回滚）
+│  │     └─ transformer/       # Transformer trait + DefaultTransformer + JobQueue + BatchScheduler
 └─ docs/
    └─ 章节标题正则表达式.png    # 章节标题正则的视觉参考
 ```
@@ -101,51 +100,84 @@ novel-style-converter/
 
 ## 数据模型
 
-7 张表（`migrations/0001_init.sql` … `0006_transformation_novels_data_asset_fk.sql`），主外键 + `ON DELETE CASCADE`（删 upload 级联删 data_asset / chapters / transformation_novels / transformation_chapters）：
+**14 张表**，由 `migrations/` 下 **31** 个 SQL 文件逐条建起来（`0001_init.sql` … `0031_ai_call_log_note`）。
+下表是真实 schema（跑完全部迁移后从 `sqlite_master` 导出），不是设计稿：
 
-**当前核心模型**：原文一次上传（`uploads`），可被解析多次、生成多份「数据资产」（`data_assets`），每份资产下挂独立的章节（`chapters`）。同一份资产可以起多本「转换小说」（`transformation_novels`），每本下的章节转换任务（`transformation_chapters`）独立执行。
+| 表 | 角色 |
+|---|---|
+| `uploads` | State 1：一次上传的原始 .txt（正文全文 + sha256） |
+| `data_assets` | State 2：一次章节解析的结果（可被多本转换小说引用） |
+| `chapters` | 某份 data_asset 下的章节 |
+| `transformation_novels` | 转换目标（同一份 data_asset 可起多本） |
+| `batches` | 一次批量转换（prompt / model / ctx / mode 固化在这里） |
+| `transformation_chapters` | 批次里的单章任务（挂在 `batch_id` 上） |
+| `workflow_results` / `workflow_result_chapters` | 批次的结果集（每章一个内容槽，供预览提交/转正） |
+| `chapter_previews` | 单章「先预览再决定」的候选稿（同一章可留多版） |
+| `prompts` / `model_configs` | 用户配置 |
+| `ai_call_logs` | AI 调用记账（denormalized，无 FK，审计用） |
+| `transformations` | **遗留空表**（早期单章转换的残留，已被 batches/tc 取代，无代码读写） |
+| `schema_versions` | 迁移记账（每条 migration 只跑一次的凭据） |
+
+**数据流**：上传原文（`uploads`）→ 解析成资产（`data_assets` + `chapters`）→ 起转换小说（`transformation_novels`）
+→ 建批次（`batches`）把章节排成任务（`transformation_chapters`）→ 结果写进结果集（`workflow_results`）。
 
 ```sql
 PRAGMA foreign_keys = ON;
 
-CREATE TABLE IF NOT EXISTS uploads (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    sha256 TEXT NOT NULL UNIQUE,
+CREATE TABLE uploads (
+    id INTEGER PRIMARY KEY,
+    sha256 TEXT NOT NULL UNIQUE,       -- 去重键
     filename TEXT NOT NULL,
     byte_size INTEGER NOT NULL,
     uploaded_at TEXT NOT NULL,         -- RFC3339
     file_path TEXT NOT NULL,           -- 原始 .txt 存档路径
-    original_text TEXT NOT NULL DEFAULT ''   -- 原文全文；章节切片按 byte offset 取
+    original_text TEXT NOT NULL DEFAULT '',  -- 原文全文；章节位置用 title_line 的行号定位
+    word_count INTEGER NOT NULL DEFAULT 0    -- zh-aware 字数，upload 时一次算好
 );
 
-CREATE TABLE IF NOT EXISTS data_assets (
+CREATE TABLE data_assets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    upload_id INTEGER NOT NULL UNIQUE REFERENCES uploads(id) ON DELETE CASCADE,
+    upload_id INTEGER NOT NULL,        -- 注意：**没有** FK（见下）
     title TEXT NOT NULL,
     parsed_at TEXT NOT NULL,
-    locked_at TEXT                     -- NULL = 未锁定（可重解析）；非 NULL = 已锁定（不可重解析）
+    source_filename TEXT NOT NULL DEFAULT '',
+    kind TEXT NOT NULL DEFAULT 'source',            -- 'source' | 'promoted'
+    source_workflow_id INTEGER REFERENCES batches(id) ON DELETE SET NULL,       -- promoted 时指向产出它的批次
+    source_data_asset_id INTEGER REFERENCES data_assets(id) ON DELETE SET NULL, -- promoted 时的上游资产
+    note TEXT NOT NULL DEFAULT ''
 );
 
-CREATE TABLE IF NOT EXISTS chapters (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+CREATE TABLE chapters (
+    id INTEGER PRIMARY KEY,
     data_asset_id INTEGER NOT NULL REFERENCES data_assets(id) ON DELETE CASCADE,
-    idx INTEGER NOT NULL,              -- 章序；重排时整本 renumber
+    idx INTEGER NOT NULL,              -- 章序；重排时整本 renumber（0-based）
     title TEXT NOT NULL,
-    byte_start INTEGER,                -- 在 data_asset.parsed_at 时的原文 offset；老数据可能 NULL
-    byte_end INTEGER,
-    word_count INTEGER NOT NULL,       -- 由 word_count() 自动计算
+    body TEXT NOT NULL DEFAULT '',
+    word_count INTEGER NOT NULL,
+    source_kind TEXT NOT NULL DEFAULT 'original',   -- `original` | 转正来源
+    source_chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL,
+    edited_at TEXT,                    -- NULL = 从未用户编辑
+    title_line INTEGER,                -- 标题在 upload.original_text 里的行号；NULL = 无原文坐标
     UNIQUE(data_asset_id, idx)
 );
 
-CREATE TABLE IF NOT EXISTS transformation_novels (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    data_asset_id INTEGER NOT NULL REFERENCES data_assets(id) ON DELETE CASCADE,
-    title TEXT NOT NULL,
-    created_at TEXT NOT NULL
+CREATE TABLE batches (
+    id INTEGER PRIMARY KEY,
+    transformation_novel_id INTEGER NOT NULL REFERENCES transformation_novels(id) ON DELETE CASCADE,
+    label TEXT,
+    on_failure_policy TEXT NOT NULL DEFAULT 'pause_and_review',  -- | 'skip_failed'
+    status TEXT NOT NULL DEFAULT 'pending',   -- pending|running|stopped|paused|completed|terminated|cancelled
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    ended_at TEXT,
+    -- 同质配置：整个批次共用一套 prompt / model / ctx（stopped 后追章直接读这里）
+    prompt_id INTEGER, model_config_id INTEGER, mode TEXT,
+    ctx_prev_original INTEGER, ctx_prev_transformed INTEGER,
+    ctx_next_original INTEGER, ctx_next_transformed INTEGER
 );
 
-CREATE TABLE IF NOT EXISTS transformation_chapters (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+CREATE TABLE transformation_chapters (
+    id INTEGER PRIMARY KEY,
     transformation_novel_id INTEGER NOT NULL REFERENCES transformation_novels(id) ON DELETE CASCADE,
     chapter_id INTEGER NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
     mode TEXT NOT NULL,                -- 'compress' | 'style'
@@ -154,34 +186,35 @@ CREATE TABLE IF NOT EXISTS transformation_chapters (
     ctx_prev_original INTEGER NOT NULL,
     ctx_prev_transformed INTEGER NOT NULL,
     ctx_next_original INTEGER NOT NULL,
-    status TEXT NOT NULL,              -- 'pending' | 'running' | 'done' | 'failed' | 'cancelled'
-    result_content TEXT,
-    tokens_in INTEGER,
+    status TEXT NOT NULL,              -- pending|running|done|failed|skipped|cancelled
+    result_content TEXT,               -- 收口到结果集后这里会清空
+    tokens_in INTEGER,                 -- NULL = provider 未返回 usage（不是 0）
     tokens_out INTEGER,
     error TEXT,
     started_at TEXT,
-    completed_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS prompts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    kind TEXT NOT NULL,                -- 'compress' | 'style'
-    template TEXT NOT NULL,
-    is_builtin INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS model_configs (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    base_url TEXT NOT NULL,
-    api_key TEXT NOT NULL,             -- 明文存本地，仅本机使用
-    model TEXT NOT NULL,
-    max_tokens INTEGER,
-    temperature REAL,
-    concurrency INTEGER NOT NULL DEFAULT 3   -- 当前未使用，为 per-model 限流留口
+    completed_at TEXT,
+    batch_id INTEGER REFERENCES batches(id) ON DELETE CASCADE,   -- 批次归属
+    style_ref_chapter_id INTEGER REFERENCES chapters(id)         -- style 模式的参考章
 );
 ```
+
+其余表的列（`prompts` / `model_configs` / `workflow_results` / `workflow_result_chapters` /
+`chapter_previews` / `ai_call_logs` / `transformations` / `schema_versions`）以 `migrations/` 为准 ——
+想确认线上库的真实结构，别照本段背，直接查 `sqlite_master`。
+
+### 几个容易踩的 schema 事实
+
+- **删 `uploads` 不会级联删 `data_assets`。** migration 0015 起 `data_assets.upload_id` 是**软引用**
+  （审计式，故意不建 FK），`PRAGMA foreign_key_list(data_assets)` 里没有这一条。级联只存在于
+  `data_asset → chapters/transformation_novels`。
+- **`chapters` 没有 `byte_start` / `byte_end`**：早期版本用 byte offset 切片，0015 已删除，改用
+  `title_line`（在原文里的行号）。
+- **`data_assets.locked_at` 不存在**：0004 建过，后续迁移已去掉；"锁定"语义现在靠
+  `kind` + `source_workflow_id` 表达。
+- **单章状态机不含 `completed`**：批次收尾写的是 `stopped`（不是 `completed`）；`completed` 只出现在
+  `batches.status` 的枚举里。
+- **`ai_call_logs` 没有任何 FK**，`model_config_id` / `context_id` 都是软引用：被引用的行删了，
+  日志仍要能读出"当时调的是哪个 model、哪个端点"。
 
 数据库文件位置：`%APPDATA%/novel-style-converter/data.db`（启动时自动 `create_dir_all`）。
 
@@ -316,6 +349,7 @@ Stage 2(已完成,2026-07-19,7 个 commit):
 - Prompts 页(`ui/prompts.rs`): Prompt 列表 / 新建 / 编辑 / 删除 + 内置只读(`[复制内置]` 按钮 → 副本进入编辑模式)+ 同步渲染预览
 - 预览:7 个变量提示 + 4 个占位输入(章节标题 / 内容 / 前文原文 / 前文已转换)+ `[渲染]` 按钮调 `nsc-core` 新增的 `prompts::render_raw`
 - nsc-core 新增 `PromptVars` + `prompts::render_raw(template, &PromptVars)`,内部接受原始字符串无需加载真实 Novel/Chapter。`prompts::render` 重构为调 `render_raw`(签名不变,transformer 调用方零改动)
+  - ⚠️ 后续重构中 `render_raw` 已被**删除**（`prompts` 现在只导出 `render`）。上面是历史记录，不要照它找函数。
 - nsc-core 测试 +5(原 23 + 新 5 = 28),nsc-app 测试 +5(原 9 + 新 5 = 14)
 
 Stage 4(已完成,2026-07-20,9 commit:1 nsc-core + 8 nsc-app):
@@ -552,7 +586,11 @@ DataAsset 页 → 选某个 transformation_novel → 章节行点 `[▶ 转换�
 - **并发**：全局一个 worker pool，2 个 worker（`src-tauri/src/lib.rs`；代码里**没有**"上限 4"的强制）。
   `ModelConfig.concurrency` 是 **per-model** 并发上限且**已生效**：`provider_cache` 按 `model_config_id`
   建共享信号量，每个 job 取一个 permit 限流（`concurrency <= 0` 会被当作 1）
-- **级联删除**：SQLite 外键启用（`PRAGMA foreign_keys = ON`），删 upload 级联 data_asset / chapters / transformation_novels / transformation_chapters
+- **级联删除**：SQLite 外键启用（`PRAGMA foreign_keys = ON`）。级联链是
+  `data_asset → chapters / transformation_novels`、`transformation_novel → batches → transformation_chapters`、
+  `batch → workflow_results → workflow_result_chapters`。
+  **删 upload 不级联**（0015 起 `data_assets.upload_id` 是软引用）：只删 `uploads` 行 + 物理文件，
+  已解析出的 data_asset / chapters 会留下 —— UI 删除前先用 `preview_upload_deletion` 告诉用户会留下哪些
 - **响应延迟**：UI 不被 IO/网络阻塞（DB 与 HTTP 都跑在 tokio runtime）
 
 ---
