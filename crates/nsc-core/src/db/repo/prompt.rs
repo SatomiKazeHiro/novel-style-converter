@@ -231,4 +231,180 @@ UPDATE prompts SET template = 'broken".into(),
         assert_eq!(p.template, "user modified");
         assert_eq!(p.archived, 1);
     }
+
+    // ── CRUD 与归档(上面三个测试只覆盖 seed 路径) ──────────────────────────
+
+    fn user_prompt(name: &str, kind: PromptKind, tmpl: &str) -> Prompt {
+        Prompt {
+            id: 0, name: name.into(), kind, template: tmpl.into(),
+            is_builtin: false, archived: 0,
+        }
+    }
+
+    /// insert → get 往返:kind 的枚举 ↔ 字符串转换、is_builtin 的 bool ↔ INTEGER 转换。
+    #[test]
+    fn insert_and_get_roundtrip_both_kinds() {
+        let db = fresh_db();
+        for kind in [PromptKind::Compress, PromptKind::Style] {
+            let id = db.prompts().insert(&user_prompt("p", kind, "模板")).unwrap();
+            let got = db.prompts().get(id).unwrap().unwrap();
+            assert_eq!(got.kind, kind, "kind 应原样往返");
+            assert_eq!(got.name, "p");
+            assert_eq!(got.template, "模板");
+            assert!(!got.is_builtin, "用户 prompt 的 is_builtin 应为 false");
+            assert_eq!(got.archived, 0);
+        }
+        let id = db.prompts().insert(&Prompt {
+            id: 0, name: "b".into(), kind: PromptKind::Compress,
+            template: "x".into(), is_builtin: true, archived: 0,
+        }).unwrap();
+        assert!(db.prompts().get(id).unwrap().unwrap().is_builtin, "builtin=true 应往返");
+    }
+
+    /// `list(false)` 隐藏归档行,`list(true)` 返回全部并按 archived ASC 排
+    /// (活动的在前,归档的在后)。
+    #[test]
+    fn list_filters_archived_unless_requested() {
+        let db = fresh_db();
+        let active = db.prompts().insert(&user_prompt("active", PromptKind::Compress, "t")).unwrap();
+        let gone = db.prompts().insert(&user_prompt("gone", PromptKind::Style, "t")).unwrap();
+        db.prompts().archive(gone).unwrap();
+
+        let visible = db.prompts().list(false).unwrap();
+        assert_eq!(visible.len(), 1, "默认列表应隐藏归档行");
+        assert_eq!(visible[0].id, active);
+
+        let all = db.prompts().list(true).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].id, active, "活动的应排在归档的前面");
+        assert_eq!(all[1].id, gone);
+    }
+
+    /// **`get` 不过滤 archived** —— BatchScheduler / transformation_chapters 的读路径
+    /// 必须能拿到归档行,否则历史 tc 引用解析会断。与 model_config 同一套不对称设计。
+    #[test]
+    fn get_returns_archived_row() {
+        let db = fresh_db();
+        let id = db.prompts().insert(&user_prompt("p", PromptKind::Compress, "t")).unwrap();
+        db.prompts().archive(id).unwrap();
+        let got = db.prompts().get(id).expect("get 应能读到归档行").unwrap();
+        assert_eq!(got.archived, 1);
+    }
+
+    /// update 只改 name / kind / template;id 不变,is_builtin 与 archived **都不可改**
+    /// (§3.9:PromptUpdate 结构本身就不含这两个字段,从类型上杜绝误改)。
+    #[test]
+    fn update_changes_only_name_kind_template() {
+        let db = fresh_db();
+        let id = db.prompts().insert(&Prompt {
+            id: 0, name: "旧名".into(), kind: PromptKind::Compress,
+            template: "旧模板".into(), is_builtin: true, archived: 0,
+        }).unwrap();
+
+        db.prompts().update(&PromptUpdate {
+            id, name: "新名", kind: PromptKind::Style, template: "新模板",
+        }).unwrap();
+
+        let after = db.prompts().get(id).unwrap().unwrap();
+        assert_eq!(after.name, "新名");
+        assert_eq!(after.kind, PromptKind::Style);
+        assert_eq!(after.template, "新模板");
+        assert!(after.is_builtin, "update 不应改动 is_builtin");
+        assert_eq!(after.archived, 0, "update 不应改动 archived");
+
+        // 归档行被 update 后仍是归档的
+        db.prompts().archive(id).unwrap();
+        db.prompts().update(&PromptUpdate {
+            id, name: "又改名", kind: PromptKind::Compress, template: "t2",
+        }).unwrap();
+        let after2 = db.prompts().get(id).unwrap().unwrap();
+        assert_eq!(after2.name, "又改名");
+        assert_eq!(after2.archived, 1, "update 不应把归档行复活");
+    }
+
+    /// archive → restore 往返;prompt 没有密钥,所以归档**不动** template
+    /// (与 model_config 归档抹 api_key 的行为刻意不同)。
+    #[test]
+    fn archive_and_restore_keep_template_intact() {
+        let db = fresh_db();
+        let id = db.prompts().insert(&user_prompt("p", PromptKind::Compress, "重要模板")).unwrap();
+
+        db.prompts().archive(id).unwrap();
+        let archived = db.prompts().get(id).unwrap().unwrap();
+        assert_eq!(archived.archived, 1);
+        assert_eq!(archived.template, "重要模板", "prompt 无密钥,归档不该抹模板");
+
+        db.prompts().restore(id).unwrap();
+        let restored = db.prompts().get(id).unwrap().unwrap();
+        assert_eq!(restored.archived, 0);
+        assert_eq!(restored.template, "重要模板");
+    }
+
+    /// 不存在的 id:get 返回 None;archive / restore 静默无行可改(不报错)。
+    #[test]
+    fn missing_id_is_not_an_error() {
+        let db = fresh_db();
+        assert!(db.prompts().get(99999).unwrap().is_none());
+        db.prompts().archive(99999).unwrap();
+        db.prompts().restore(99999).unwrap();
+    }
+
+    /// `count_by_prompt` 统计被多少条 transformation_chapters 引用 ——
+    /// UI 在删除前用它提示"被 N 个转换结果引用"。
+    #[test]
+    fn count_by_prompt_counts_referencing_chapters() {
+        use crate::models::batch::{NewBatch, OnFailurePolicy};
+        use crate::models::{
+            NewChapter, NewDataAsset, NewModelConfig, NewTransformationChapter,
+            NewTransformationNovel, NewUpload,
+        };
+
+        let db = fresh_db();
+        let prompt_id = db.prompts().insert(&user_prompt("p", PromptKind::Compress, "t")).unwrap();
+        let other_prompt = db.prompts().insert(&user_prompt("q", PromptKind::Style, "t")).unwrap();
+        assert_eq!(db.prompts().count_by_prompt(prompt_id).unwrap(), 0, "尚无引用时为 0");
+
+        let upload_id = db.uploads().insert(&NewUpload {
+            sha256: "pu1".into(), filename: "f.txt".into(), byte_size: 1,
+            file_path: "/t".into(), original_text: "x".into(), word_count: 1,
+        }).unwrap();
+        let da_id = db.data_assets().insert(&NewDataAsset {
+            upload_id, title: "da".into(), source_filename: "f.txt".into(),
+            ..Default::default()
+        }).unwrap();
+        let tn_id = db.transformation_novels().insert(&NewTransformationNovel {
+            data_asset_id: da_id, title: "tn".into(), note: String::new(),
+        }).unwrap();
+        let model_id = db.model_configs().insert(&NewModelConfig {
+            name: "m".into(), base_url: "http://x".into(), api_key: "k".into(),
+            model: "m".into(), max_tokens: None, max_context: None, temperature: None,
+            disable_thinking: false, concurrency: 1,
+        }).unwrap();
+        let batch_id = db.batches().insert(&NewBatch {
+            transformation_novel_id: tn_id, label: None,
+            on_failure_policy: OnFailurePolicy::PauseAndReview,
+            prompt_id, model_config_id: model_id, mode: "compress".into(),
+            ctx_prev_original: 0, ctx_prev_transformed: 0,
+            ctx_next_original: 0, ctx_next_transformed: 0,
+        }).unwrap();
+        // 两个章节引 prompt_id,另一个引 other_prompt
+        let mut refs = 0;
+        for (i, pid) in [prompt_id, prompt_id, other_prompt].iter().enumerate() {
+            let cid = db.chapters().insert(&NewChapter {
+                data_asset_id: da_id, idx: i as i32 + 1, title: format!("c{i}"),
+                body: "正文".into(), word_count: 2, ..Default::default()
+            }).unwrap();
+            db.transformation_chapters().insert(&NewTransformationChapter {
+                transformation_novel_id: tn_id, chapter_id: cid,
+                mode: PromptKind::Compress, prompt_id: *pid, model_config_id: model_id,
+                ctx_prev_original: 0, ctx_prev_transformed: 0, ctx_next_original: 0,
+                batch_id: Some(batch_id), style_ref_chapter_id: None,
+            }).unwrap();
+            if *pid == prompt_id { refs += 1; }
+        }
+        assert_eq!(refs, 2);
+        assert_eq!(db.prompts().count_by_prompt(prompt_id).unwrap(), 2,
+            "应数出引用该 prompt 的 tc 行数");
+        assert_eq!(db.prompts().count_by_prompt(other_prompt).unwrap(), 1);
+    }
 }

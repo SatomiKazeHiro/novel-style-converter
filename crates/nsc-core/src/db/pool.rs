@@ -246,4 +246,101 @@ mod tests {
         assert_eq!(total, 1, "迁移不应丢历史行");
         assert_eq!(logs[0].ratio_note, None, "新列在旧行上应为 NULL");
     }
+
+    // ── 迁移机制本身 ─────────────────────────────────────────────────────
+    //
+    // 桌面应用每次启动都会对同一个库跑 run_schemas,所以"已应用的迁移绝不重跑"
+    // 是硬要求:一旦重跑,ALTER 会报 duplicate column、重建类迁移会丢数据、
+    // 而 idx 那类"非幂等"迁移会把章节序号再加一次。
+
+    /// 所有 sqlite_master 里的 DDL(排序稳定),用于比较两次打开是否产生同一 schema。
+    fn schema_dump(db: &Db) -> Vec<String> {
+        let g = db.lock();
+        let mut stmt = g
+            .prepare("SELECT sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type, name")
+            .unwrap();
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        rows
+    }
+
+    /// 重开已迁移过的库:不重跑任何迁移,且 schema 与数据都完全不变。
+    ///
+    /// 回归点:已应用的迁移若被重复执行 ——
+    /// - `ALTER TABLE ... ADD COLUMN` 会报 duplicate column(name);
+    /// - 重建表类(0012/0013/0015/0019/0027)会丢数据;
+    /// - 0023/startup_cleanup 的 idx 迁移**非幂等**,会把序号再加一次。
+    #[test]
+    fn reopening_does_not_rerun_migrations_or_change_schema() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reopen.db");
+
+        // 首次打开:全部迁移跑一遍,并造一点真实数据(跨重建表:uploads + data_assets)
+        let (versions_before, dump_before, upload_id) = {
+            let db = Db::open(&path).unwrap();
+            let upload_id = db.uploads().insert(&crate::models::NewUpload {
+                sha256: "reopen1".into(), filename: "f.txt".into(), byte_size: 5,
+                file_path: "/tmp/f.txt".into(), original_text: "原文内容".into(), word_count: 4,
+            }).unwrap();
+            db.data_assets().insert(&crate::models::NewDataAsset {
+                upload_id, title: "da".into(), source_filename: "f.txt".into(),
+                ..Default::default()
+            }).unwrap();
+            (db.applied_schema_versions().unwrap(), schema_dump(&db), upload_id)
+        };
+        assert_eq!(versions_before.len(), super::super::migrate::SCHEMAS.len(),
+            "首次打开后,每条注册的迁移都应恰好记录一次");
+
+        // 再打开几次(模拟用户多次启动)
+        for _ in 0..2 {
+            let db = Db::open(&path).unwrap();
+            assert_eq!(db.applied_schema_versions().unwrap(), versions_before,
+                "重开不该新增/改动 schema_versions 记录(=不该重跑迁移)");
+            assert_eq!(schema_dump(&db), dump_before, "重开不该改动 schema");
+
+            let u = db.uploads().get(upload_id).unwrap().expect("数据应还在");
+            assert_eq!(u.original_text, "原文内容");
+            assert_eq!(u.word_count, 4, "重开不该改动 word_count(迁移不重跑)");
+        }
+    }
+
+    /// 每条注册的迁移版本名都必须在 schema_versions 里出现过 ——
+    /// 防止 SCHEMAS 里漏注册(文件存在但没进数组 = 永远不执行,静默少一列)。
+    ///
+    /// 同时校验迁移文件数与注册数一致:新增 .sql 却忘了加进 SCHEMAS 是常见疏漏。
+    #[test]
+    fn every_registered_migration_was_applied_and_files_match_registry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("all.db");
+        let db = Db::open(&path).unwrap();
+        let applied = db.applied_schema_versions().unwrap();
+
+        for (key, _) in super::super::migrate::SCHEMAS {
+            assert!(
+                applied.iter().any(|v| v == key),
+                "迁移 {key} 已注册但没有被记录为已应用",
+            );
+        }
+        assert_eq!(applied.len(), super::super::migrate::SCHEMAS.len(),
+            "schema_versions 行数应与 SCHEMAS 条目数一致(不应有重复或额外记录)");
+
+        // 交叉核对:migrations/ 目录下的 .sql 数量应与注册数一致 ——
+        // 少了 = 有文件没注册(不会执行);多了 = 注册了不存在的文件(编译期就会失败)。
+        let dir_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+        let sql_files = std::fs::read_dir(&dir_path)
+            .map(|d| d.filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|x| x == "sql"))
+                .count())
+            .unwrap_or(0);
+        assert_eq!(
+            sql_files,
+            super::super::migrate::SCHEMAS.len(),
+            "migrations/ 下 {sql_files} 个 .sql,但 SCHEMAS 注册了 {} 条 —— \
+             有文件没注册(将永不执行)或注册了多余项",
+            super::super::migrate::SCHEMAS.len(),
+        );
+    }
 }
